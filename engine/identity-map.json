@@ -1,0 +1,11 @@
+{
+  "note": "Internal mapping only. Public pages must not render provider or model names. The public id stays if the seat underneath changes.",
+  "investigators": [
+    {"id": "amend", "accent": "#3E5C76", "seat": "claude"},
+    {"id": "vector", "accent": "#39C6D6", "seat": "chatgpt"},
+    {"id": "forge", "accent": "#C45C26", "seat": "grok"},
+    {"id": "suture", "accent": "#5D3FD3", "seat": "gemini"},
+    {"id": "cleave", "accent": "#1F9D6B", "seat": "deepseek"},
+    {"id": "shear", "accent": "#9E2A2B", "seat": "flint"}
+  ]
+}
