@@ -1,0 +1,45 @@
+test_admin_is_not_a_public_registration_flag (test_app.AuthTests.test_admin_is_not_a_public_registration_flag) ... ok
+test_allowance_cannot_be_raised_from_the_environment (test_app.AuthTests.test_allowance_cannot_be_raised_from_the_environment) ... ok
+test_duplicate_signup_and_short_password (test_app.AuthTests.test_duplicate_signup_and_short_password) ... ok
+test_signup_login_logout_and_session_rotation (test_app.AuthTests.test_signup_login_logout_and_session_rotation) ... ok
+test_acceptance_commits_once_and_payload_is_escaped (test_app.EngineTests.test_acceptance_commits_once_and_payload_is_escaped) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=6, family=2, type=1, proto=0, laddr=('127.0.0.1', 37573)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_disabled_engine_is_not_called_and_direct_budget_is_ignored (test_app.EngineTests.test_disabled_engine_is_not_called_and_direct_budget_is_ignored) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 34651)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_engine_error_does_not_commit (test_app.EngineTests.test_engine_error_does_not_commit) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 36857)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_email_guessing_cannot_become_admin_and_unverified_production_cannot_spend (test_app.HardeningTests.test_email_guessing_cannot_become_admin_and_unverified_production_cannot_spend) ... ok
+test_forwarded_for_and_extra_accounts_do_not_mint_admin_or_bypass_limits (test_app.HardeningTests.test_forwarded_for_and_extra_accounts_do_not_mint_admin_or_bypass_limits) ... ok
+test_lost_engine_reply_stays_held_across_retry_and_restart (test_app.HardeningTests.test_lost_engine_reply_stays_held_across_retry_and_restart) ... request failed: POST api (RuntimeError)
+ok
+test_signup_login_and_logout_require_csrf_and_sessions_can_be_revoked (test_app.HardeningTests.test_signup_login_and_logout_require_csrf_and_sessions_can_be_revoked) ... ok
+test_checkout_is_fail_closed_without_a_price (test_app.PaymentTests.test_checkout_is_fail_closed_without_a_price) ... ok
+test_disabled_mode_ignores_a_valid_signature (test_app.PaymentTests.test_disabled_mode_ignores_a_valid_signature) ... ok
+test_live_price_without_a_model_cost_policy_stays_closed (test_app.PaymentTests.test_live_price_without_a_model_cost_policy_stays_closed) ... ok
+test_paid_credit_is_required_after_the_allowance_and_commits_once (test_app.PaymentTests.test_paid_credit_is_required_after_the_allowance_and_commits_once) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=18, family=2, type=1, proto=0, laddr=('127.0.0.1', 39849)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_webhook_signature_is_a_test_double_and_does_not_grant_credits (test_app.PaymentTests.test_webhook_signature_is_a_test_double_and_does_not_grant_credits) ... ok
+test_cancel_before_the_engine_releases_once (test_app.QuotaTests.test_cancel_before_the_engine_releases_once) ... ok
+test_crash_before_acceptance_is_recovered_without_losing_the_credit (test_app.QuotaTests.test_crash_before_acceptance_is_recovered_without_losing_the_credit) ... request failed: POST api (RuntimeError)
+ok
+test_engine_unavailable_releases_and_retry_does_not_charge_twice (test_app.QuotaTests.test_engine_unavailable_releases_and_retry_does_not_charge_twice) ... ok
+test_six_concurrent_starts_cannot_hold_six_credits (test_app.QuotaTests.test_six_concurrent_starts_cannot_hold_six_credits) ... ok
+test_http_cookie_roundtrip_and_metrics_do_not_count_requests_as_people (test_app.SecurityTests.test_http_cookie_roundtrip_and_metrics_do_not_count_requests_as_people) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=6, family=2, type=1, proto=0, laddr=('127.0.0.1', 37605)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_owner_isolation_and_direct_api_bypass (test_app.SecurityTests.test_owner_isolation_and_direct_api_bypass) ... ok
+test_rate_limit_and_unknown_paths (test_app.SecurityTests.test_rate_limit_and_unknown_paths) ... ok
+
+----------------------------------------------------------------------
+Ran 23 tests in 4.293s
+
+OK

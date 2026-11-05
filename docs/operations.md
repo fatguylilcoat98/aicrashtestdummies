@@ -24,9 +24,14 @@ python -m unittest discover -s tests -v
 ## Decisions already made
 
 - Five included tests per account. The number is fixed in code. `ACTD_FREE_CREDITS` is ignored.
-- A credit is committed only when this process records an engine acceptance. If the engine is not configured, refuses, times out, or the response is lost, the hold is released. That can under-charge the operator if a model call started and the reply was lost. It does not charge the account twice.
+- A credit is consumed when the engine returns an acceptance id, or when an operator resolves an unknown send as consumed. Acceptance is not a report.
+- A credit stays held if the request was dispatched and the reply was lost, timed out, or incomplete. That hold still counts against the five, so a retry cannot start another model call. The same idempotency key does not send again.
+- A credit is released only when the request never left this server, the engine returned a complete rejection, the owner cancels before dispatch, or an operator records that an unknown send did not run.
+- Signing up with an address listed in `ACTD_ADMIN_EMAILS` does not create an admin. Email is not verified. Admin promotion and email verification require `ACTD_OPERATOR_TOKEN` on the server. Public launch stays closed while mail verification is missing.
+- `X-Forwarded-For` is ignored unless the socket peer is listed in `ACTD_TRUSTED_PROXIES`.
+- Checkout stays off unless live mode, a price, a provider, a webhook secret, a credit pack, a model-cost file, and `ACTD_ALLOW_LIVE_CHARGES` are all set. A local signature helper is not a payment provider. This build does not call a payment network.
 - The same idempotency key always returns the same run. A new attempt needs a new key.
-- A hold with no acceptance expires after `ACTD_RESERVATION_TTL_SECONDS` (default 900) and is released, not converted into a charge.
+- A `reserved` hold that never started transmission expires after `ACTD_RESERVATION_TTL_SECONDS` (default 900) and is released. A `dispatching` or `unknown` hold does not expire into a release.
 - Cancelling before acceptance releases the credit. Cancelling after acceptance does not refund it.
 - Card numbers are never accepted. Checkout does nothing until provider, webhook secret, currency, price, and credit pack are all set. `fixture` mode is local and is refused when `ACTD_ENV=production`. Live mode also requires `ACTD_ALLOW_LIVE_CHARGES=1`, and this build still does not call Stripe or any other payment network.
 - No price was found in the repo, so none is shown.
@@ -40,7 +45,7 @@ All of these must be true before any outbound investigation request:
 2. `ACTD_ENGINE_BASE_URL` is an `http` or `https` URL
 3. `ACTD_ENGINE_START_PATH` is a single absolute path
 4. `ACTD_MAX_RUN_BUDGET_USD` is a positive number
-5. A contract file, path in `ACTD_CONTRACT_PATH` (default `engine/contract.json`), uses schema `actd.engine-binding/1`, and its start path equals `ACTD_ENGINE_START_PATH`
+5. A contract file, path in `ACTD_CONTRACT_PATH` (default `engine/contract.json`), uses schema `actd.engine-binding/1`, its start path equals `ACTD_ENGINE_START_PATH`, and `budget.enforced_by` is `engine`. A `budget_usd` field in the JSON is not accepted.
 
 The contract is not in this repo because the Team Talk HTTP API was not in this repo. Do not invent one. Fields the client is willing to send are only `question`, `run_id`, and `budget_usd`. It will not send email, password, or session cookies. `/opt/team-talk` being absent is reported on `/api/health` and does not, by itself, authorize a call.
 

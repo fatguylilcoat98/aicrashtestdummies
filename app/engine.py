@@ -16,12 +16,14 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from app.config import Config
 
 BINDING_SCHEMA = "actd.engine-binding/1"
-ALLOWED_FIELDS = {"question", "run_id", "budget_usd"}
+ALLOWED_FIELDS = {"question", "run_id"}
+AMBIGUOUS_HTTP = {408, 429, 500, 502, 503, 504}
 
 
 @dataclass
 class EngineOutcome:
     accepted: bool
+    disposition: str
     code: str
     detail: str
     engine_ref: str | None = None
@@ -51,6 +53,8 @@ def blockers(config: Config) -> list[str]:
         found.append("contract_rejected")
     elif config.engine_start_path and loaded["start"]["path"] != config.engine_start_path:
         found.append("start_path_mismatch")
+    elif not _budget_enforced(loaded):
+        found.append("budget_not_engine_enforced")
     if not Path("/opt/team-talk").exists():
         found.append("team_talk_absent")
     return found
@@ -65,11 +69,13 @@ def describe(code: str) -> str:
         "start_path_rejected": "The configured start path is not a single absolute path.",
         "start_path_mismatch": "The configured start path does not match the contract, so nothing was called.",
         "budget_missing": "No per-run budget cap is configured, so a model call is refused.",
+        "budget_not_engine_enforced": "The contract does not say the engine enforces the budget. A budget number in JSON is not a control, so nothing was called.",
         "contract_missing": "engine/contract.json is not in the repo. There is no sanctioned request schema.",
         "team_talk_absent": "The Team Talk process documented at /opt/team-talk is not on this host.",
         "contract_rejected": "The contract file is present but does not match the binding this app can send.",
-        "engine_http_error": "The engine returned an error before acceptance. The credit was released.",
-        "engine_unreachable": "The engine could not be reached. No acceptance was recorded, so the credit was released.",
+        "engine_http_error": "The engine returned a complete rejection. The credit was released.",
+        "engine_unreachable": "The connection was refused before the request was sent. The credit was released.",
+        "engine_ambiguous": "The reply was lost or incomplete. The credit stays held because the engine may still be working.",
         "engine_rejected": "The engine response did not include an acceptance id. The credit was released.",
     }.get(code, code)
 
@@ -82,19 +88,23 @@ def invoke(config: Config, *, run_id: str, question: str) -> EngineOutcome:
     if hard:
         return EngineOutcome(
             accepted=False,
+            disposition="not_sent",
             code="engine_unavailable",
             detail="The investigation engine was not called.\n" + "\n".join(describe(item) for item in hard),
             blockers=reasons,
         )
+    if config.engine_transport is not None:
+        return config.engine_transport(run_id=run_id, question=question)
     contract = _load_contract(config.resolved_contract_path)
     if contract is None:
         return EngineOutcome(
             accepted=False,
+            disposition="not_sent",
             code="engine_unavailable",
             detail=describe("contract_rejected"),
             blockers=reasons + ["contract_rejected"],
         )
-    payload = _payload(contract, run_id=run_id, question=question, budget=config.max_run_budget_usd)
+    payload = _payload(contract, run_id=run_id, question=question)
     url = config.engine_base_url.rstrip("/") + contract["start"]["path"]
     body = json.dumps(payload).encode("utf-8")
     request = Request(
@@ -113,56 +123,62 @@ def invoke(config: Config, *, run_id: str, question: str) -> EngineOutcome:
             raw = response.read(64_000)
             status = getattr(response, "status", 200)
     except HTTPError as exc:
+        ambiguous = exc.code in AMBIGUOUS_HTTP
         return EngineOutcome(
             accepted=False,
-            code="engine_unavailable",
-            detail=describe("engine_http_error"),
+            disposition="ambiguous" if ambiguous else "rejected",
+            code="unknown" if ambiguous else "engine_unavailable",
+            detail=describe("engine_ambiguous" if ambiguous else "engine_http_error"),
             blockers=[f"http_{exc.code}"],
         )
-    except (URLError, TimeoutError, OSError):
-        return EngineOutcome(
-            accepted=False,
-            code="engine_unavailable",
-            detail=describe("engine_unreachable"),
-            blockers=["unreachable"],
-        )
+    except TimeoutError:
+        return _ambiguous("timeout")
+    except URLError as exc:
+        if _refused(exc):
+            return EngineOutcome(
+                accepted=False,
+                disposition="not_sent",
+                code="engine_unavailable",
+                detail=describe("engine_unreachable"),
+                blockers=["connection_refused"],
+            )
+        return _ambiguous("url_error")
+    except OSError:
+        return _ambiguous("os_error")
     if status >= 400:
         return EngineOutcome(
             accepted=False,
-            code="engine_unavailable",
-            detail=describe("engine_http_error"),
+            disposition="ambiguous" if status in AMBIGUOUS_HTTP else "rejected",
+            code="unknown" if status in AMBIGUOUS_HTTP else "engine_unavailable",
+            detail=describe("engine_ambiguous" if status in AMBIGUOUS_HTTP else "engine_http_error"),
             blockers=[f"http_{status}"],
         )
     try:
         parsed = json.loads(raw.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError):
-        return EngineOutcome(
-            accepted=False,
-            code="engine_unavailable",
-            detail=describe("engine_rejected"),
-            blockers=["bad_json"],
-        )
+        return _ambiguous("bad_json")
     if not isinstance(parsed, dict):
-        return EngineOutcome(
-            accepted=False,
-            code="engine_unavailable",
-            detail=describe("engine_rejected"),
-            blockers=["bad_json"],
-        )
+        return _ambiguous("bad_json")
     accept_field = contract["accept_field"]
     ref = parsed.get(accept_field)
     if not isinstance(ref, str) or not ref.strip():
         return EngineOutcome(
             accepted=False,
+            disposition="rejected",
             code="engine_unavailable",
             detail=describe("engine_rejected"),
             result_json=json.dumps(parsed)[:20_000],
             blockers=["missing_acceptance"],
         )
+    report = parsed.get("report")
+    completed = isinstance(report, str) and bool(report.strip())
     return EngineOutcome(
         accepted=True,
-        code="accepted",
-        detail="The engine accepted the run. This site did not write a report of its own.",
+        disposition="accepted",
+        code="completed" if completed else "accepted",
+        detail="The engine accepted the run. This site did not write a report of its own."
+        if not completed
+        else "The engine returned a payload. It is shown as text.",
         engine_ref=ref.strip()[:200],
         result_json=json.dumps(parsed)[:20_000],
         blockers=reasons,
@@ -206,6 +222,29 @@ def _load_contract(path: Path) -> dict | None:
     return data
 
 
-def _payload(contract: dict, *, run_id: str, question: str, budget: float | None) -> dict:
-    values = {"question": question, "run_id": run_id, "budget_usd": budget}
+def _payload(contract: dict, *, run_id: str, question: str) -> dict:
+    values = {"question": question, "run_id": run_id}
     return {key: values[key] for key in contract["request_fields"]}
+
+
+def _budget_enforced(contract: dict) -> bool:
+    budget = contract.get("budget")
+    return isinstance(budget, dict) and budget.get("enforced_by") == "engine"
+
+
+def _ambiguous(reason: str) -> EngineOutcome:
+    return EngineOutcome(
+        accepted=False,
+        disposition="ambiguous",
+        code="unknown",
+        detail=describe("engine_ambiguous"),
+        blockers=[reason],
+    )
+
+
+def _refused(exc: URLError) -> bool:
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, OSError) and getattr(reason, "errno", None) in {111, 61}:
+        return True
+    text = str(reason).lower()
+    return "refused" in text or "errno 111" in text

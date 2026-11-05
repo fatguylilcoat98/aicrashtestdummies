@@ -71,6 +71,14 @@ class Config:
     # Test seam. Production leaves this empty. Called only by the request
     # that created a reservation, before any engine I/O.
     before_engine: object | None = None
+    after_dispatch: object | None = None
+    engine_transport: object | None = None
+    operator_token: str | None = None
+    require_verified_email: bool = False
+    trusted_proxies: frozenset[str] = field(default_factory=frozenset)
+    trusted_proxy_hops: int = 0
+    signup_limit: int = 40
+    form_cookie_name: str = "actd_form"
 
     @property
     def db_path(self) -> Path:
@@ -89,9 +97,7 @@ class Config:
         still refuses to charge unless ACTD_ALLOW_LIVE_CHARGES=1, and this
         build does not call a payment network either way.
         """
-        if self.payments_mode not in {"fixture", "live"}:
-            return False
-        if self.env == "production" and self.payments_mode == "fixture":
+        if self.payments_mode != "live":
             return False
         if self.payments_mode == "live" and not self.allow_live_charges:
             return False
@@ -173,6 +179,15 @@ class Config:
             model_cost_policy_path=Path(policy).expanduser() if policy else None,
             contract_path=Path(contract).expanduser() if contract else None,
             allow_live_charges=_flag("ACTD_ALLOW_LIVE_CHARGES"),
+            operator_token=os.environ.get("ACTD_OPERATOR_TOKEN", "").strip() or None,
+            require_verified_email=env == "production",
+            trusted_proxies=frozenset(
+                item.strip()
+                for item in os.environ.get("ACTD_TRUSTED_PROXIES", "").split(",")
+                if item.strip()
+            ),
+            trusted_proxy_hops=int(os.environ.get("ACTD_TRUSTED_PROXY_HOPS", "0") or "0"),
+            signup_limit=int(os.environ.get("ACTD_SIGNUP_LIMIT", "5")),
             engine_base_url=os.environ.get("ACTD_ENGINE_BASE_URL", "").strip() or None,
             engine_start_path=os.environ.get("ACTD_ENGINE_START_PATH", "").strip() or None,
             engine_invocation_enabled=_flag("ACTD_ENGINE_INVOCATION_ENABLED"),

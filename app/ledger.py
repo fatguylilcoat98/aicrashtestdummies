@@ -1,17 +1,16 @@
 """Per-user credit ledger.
 
-Policy (failed and uncertain runs):
-A credit is committed only when this process records an engine acceptance.
-If the engine is not configured, refuses the run, times out, or the response
-is lost, the reservation is released and the credit returns to the account.
-That can under-charge the operator if a model call actually started. It does
-not charge the account twice, and it does not leave a held credit behind.
+A credit is consumed when an acceptance id is recorded, or when an operator
+resolves an unknown transmission as consumed. Acceptance alone is not a report.
 
-The same account idempotency key always maps to one reservation. Retrying it
-does not open a second hold. A new attempt needs a new key.
+Holds that still count against the five included tests:
+reserved (not sent), dispatching (request handed to the socket), and unknown
+(the reply was lost or incomplete, so the engine may still be working).
 
-Stale holds with no recorded acceptance are released after the reservation
-TTL (default 15 minutes). They are not converted into charges.
+Automatic release is only for a hold that never left `reserved`, or for a
+definite engine rejection after a complete response. A lost reply stays
+`unknown` until an operator resolves it. Retrying that idempotency key does
+not send a second request.
 """
 
 from __future__ import annotations
@@ -21,6 +20,10 @@ import uuid
 from datetime import timedelta
 
 from app.auth import iso, parse_iso, utcnow
+
+
+HOLDING_STATES = ("reserved", "dispatching", "unknown")
+FINAL_STATES = ("reserved", "dispatching")
 
 
 def new_id() -> str:
@@ -43,7 +46,7 @@ def _held(conn: sqlite3.Connection, user_id: str) -> dict[str, int]:
         """
         SELECT source, COUNT(*) AS c
         FROM reservations
-        WHERE user_id = ? AND state = 'reserved'
+        WHERE user_id = ? AND state IN ('reserved', 'dispatching', 'unknown')
         GROUP BY source
         """,
         (user_id,),
@@ -51,16 +54,19 @@ def _held(conn: sqlite3.Connection, user_id: str) -> dict[str, int]:
     return {row["source"]: row["c"] for row in rows}
 
 
-def snapshot(conn: sqlite3.Connection, user_id: str) -> dict:
+def snapshot(conn: sqlite3.Connection, user_id: str, *, lock_unverified: bool = False) -> dict:
     account = conn.execute(
         "SELECT * FROM ledger_accounts WHERE user_id = ?",
         (user_id,),
     ).fetchone()
+    user = conn.execute("SELECT email_verified FROM users WHERE id = ?", (user_id,)).fetchone()
+    verified = bool(user and user["email_verified"])
+    locked = lock_unverified and not verified
     held = _held(conn, user_id)
     free_held = held.get("free", 0)
     paid_held = held.get("paid", 0)
-    free_remaining = account["free_allowance"] - account["free_committed"] - free_held
-    paid_remaining = account["paid_credits"] - account["paid_committed"] - paid_held
+    free_remaining = 0 if locked else account["free_allowance"] - account["free_committed"] - free_held
+    paid_remaining = 0 if locked else account["paid_credits"] - account["paid_committed"] - paid_held
     entries = conn.execute(
         """
         SELECT kind, source, amount, note, created_at
@@ -81,12 +87,14 @@ def snapshot(conn: sqlite3.Connection, user_id: str) -> dict:
         "paid_held": paid_held,
         "paid_remaining": paid_remaining,
         "remaining": free_remaining + paid_remaining,
+        "email_verified": verified,
+        "credits_locked": locked,
         "entries": [dict(row) for row in entries],
     }
 
 
 def sweep(conn: sqlite3.Connection, now_iso: str, ttl_seconds: int) -> int:
-    """Release holds that never recorded an acceptance. Caller owns the transaction."""
+    """Release holds that never started transmission. Caller owns the transaction."""
     cutoff = iso(parse_iso(now_iso) - timedelta(seconds=ttl_seconds))
     rows = conn.execute(
         """
@@ -97,7 +105,13 @@ def sweep(conn: sqlite3.Connection, now_iso: str, ttl_seconds: int) -> int:
     ).fetchall()
     released = 0
     for row in rows:
-        if _release_locked(conn, row["id"], now_iso, "Released: no acceptance was recorded before the hold expired."):
+        if _release_locked(
+            conn,
+            row["id"],
+            now_iso,
+            "Released: the test never left this server, and the unused hold expired.",
+            allowed=("reserved",),
+        ):
             released += 1
     return released
 
@@ -109,6 +123,8 @@ def reserve(
     question: str,
     now_iso: str,
     ttl_seconds: int,
+    *,
+    lock_unverified: bool = False,
 ) -> dict:
     """Hold one credit or return the reservation already stored for this key."""
 
@@ -130,7 +146,9 @@ def reserve(
                 "reservation": dict(existing),
                 "run": dict(run),
             }
-        view = snapshot(conn, user_id)
+        view = snapshot(conn, user_id, lock_unverified=lock_unverified)
+        if view["credits_locked"]:
+            return {"ok": False, "error": "verification_required", "snapshot": view}
         if view["free_remaining"] > 0:
             source = "free"
         elif view["paid_remaining"] > 0:
@@ -200,28 +218,42 @@ def reserve(
     return tx(conn, work)
 
 
-def _release_locked(conn: sqlite3.Connection, reservation_id: str, now_iso: str, note: str) -> bool:
+def _release_locked(
+    conn: sqlite3.Connection,
+    reservation_id: str,
+    now_iso: str,
+    note: str,
+    allowed: tuple[str, ...] = ("reserved",),
+) -> bool:
     row = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
-    if row is None or row["state"] != "reserved":
+    if row is None or row["state"] not in allowed:
         return False
+    placeholders = ",".join("?" for _ in allowed)
     updated = conn.execute(
-        """
+        f"""
         UPDATE reservations
         SET state = 'released', updated_at = ?
-        WHERE id = ? AND state = 'reserved'
+        WHERE id = ? AND state IN ({placeholders})
         """,
-        (now_iso, reservation_id),
+        (now_iso, reservation_id, *allowed),
     )
     if updated.rowcount != 1:
         return False
     conn.execute(
         """
         UPDATE runs
-        SET status = CASE WHEN status = 'reserved' THEN 'released' ELSE status END,
+        SET status = CASE
+              WHEN status IN ('reserved', 'dispatching', 'unknown') THEN 'released'
+              ELSE status
+            END,
+            detail = CASE
+              WHEN status IN ('reserved', 'dispatching', 'unknown') THEN ?
+              ELSE detail
+            END,
             updated_at = ?
         WHERE reservation_id = ?
         """,
-        (now_iso, reservation_id),
+        (note, now_iso, reservation_id),
     )
     conn.execute(
         """
@@ -252,7 +284,7 @@ def finalize(
         row = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
         if row is None:
             return {"changed": False, "state": None}
-        if row["state"] != "reserved":
+        if row["state"] not in FINAL_STATES:
             run = conn.execute("SELECT * FROM runs WHERE id = ?", (row["run_id"],)).fetchone()
             return {"changed": False, "state": row["state"], "run": dict(run)}
         if accepted:
@@ -285,7 +317,7 @@ def finalize(
             """
             UPDATE reservations
             SET state = ?, updated_at = ?
-            WHERE id = ? AND state = 'reserved'
+            WHERE id = ? AND state IN ('reserved', 'dispatching')
             """,
             (new_state, now_iso, reservation_id),
         )
@@ -380,6 +412,189 @@ def grant_paid(conn: sqlite3.Connection, user_id: str, credits: int, event_id: s
             (new_id(), user_id, credits, now_iso),
         )
         return {"ok": True, "duplicate": False, "credits": credits, "user_id": user_id}
+
+    from app.db import tx
+
+    return tx(conn, work)
+
+
+def mark_dispatching(conn: sqlite3.Connection, reservation_id: str, now_iso: str) -> bool:
+    def work():
+        updated = conn.execute(
+            """
+            UPDATE reservations
+            SET state = 'dispatching', updated_at = ?
+            WHERE id = ? AND state = 'reserved'
+            """,
+            (now_iso, reservation_id),
+        )
+        if updated.rowcount != 1:
+            return False
+        conn.execute(
+            """
+            UPDATE runs
+            SET status = 'dispatching', updated_at = ?
+            WHERE reservation_id = ? AND status = 'reserved'
+            """,
+            (now_iso, reservation_id),
+        )
+        return True
+
+    from app.db import tx
+
+    return tx(conn, work)
+
+
+def mark_unknown(conn: sqlite3.Connection, reservation_id: str, now_iso: str, detail: str) -> dict:
+    """Keep the hold. The request may have reached the engine."""
+
+    def work():
+        if not _unknown_locked(conn, reservation_id, now_iso, detail):
+            row = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
+            if row is None:
+                return {"changed": False, "state": None, "run": None}
+            run = conn.execute("SELECT * FROM runs WHERE id = ?", (row["run_id"],)).fetchone()
+            return {"changed": False, "state": row["state"], "run": dict(run) if run else None}
+        row = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
+        conn.execute(
+            """
+            INSERT INTO ledger_entries (
+              id, user_id, reservation_id, kind, source, amount, note, created_at
+            ) VALUES (?, ?, ?, 'unknown', ?, 0, ?, ?)
+            """,
+            (
+                new_id(),
+                row["user_id"],
+                reservation_id,
+                row["source"],
+                "Held. The engine reply was lost or incomplete, so this credit stays reserved.",
+                now_iso,
+            ),
+        )
+        run = conn.execute("SELECT * FROM runs WHERE id = ?", (row["run_id"],)).fetchone()
+        return {"changed": True, "state": "unknown", "run": dict(run)}
+
+    from app.db import tx
+
+    return tx(conn, work)
+
+
+def quarantine_dispatching(conn: sqlite3.Connection, now_iso: str, min_age_seconds: int) -> int:
+    """An in-flight send whose process is gone stays unknown. It is not released."""
+
+    def work():
+        if min_age_seconds <= 0:
+            rows = conn.execute(
+                "SELECT id FROM reservations WHERE state = 'dispatching'"
+            ).fetchall()
+        else:
+            cutoff = iso(parse_iso(now_iso) - timedelta(seconds=min_age_seconds))
+            rows = conn.execute(
+                """
+                SELECT id FROM reservations
+                WHERE state = 'dispatching' AND updated_at < ?
+                """,
+                (cutoff,),
+            ).fetchall()
+        changed = 0
+        for row in rows:
+            if _unknown_locked(
+                conn,
+                row["id"],
+                now_iso,
+                "Outcome unknown after a restart. The credit stays held until an operator resolves it.",
+            ):
+                changed += 1
+        return changed
+
+    from app.db import tx
+
+    return tx(conn, work)
+
+
+def _unknown_locked(conn: sqlite3.Connection, reservation_id: str, now_iso: str, detail: str) -> bool:
+    row = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
+    if row is None or row["state"] != "dispatching":
+        return False
+    updated = conn.execute(
+        """
+        UPDATE reservations SET state = 'unknown', updated_at = ?
+        WHERE id = ? AND state = 'dispatching'
+        """,
+        (now_iso, reservation_id),
+    )
+    if updated.rowcount != 1:
+        return False
+    conn.execute(
+        """
+        UPDATE runs
+        SET status = 'unknown', detail = ?, engine_code = 'unknown', updated_at = ?
+        WHERE id = ?
+        """,
+        (detail, now_iso, row["run_id"]),
+    )
+    return True
+
+
+def resolve_unknown(conn: sqlite3.Connection, run_id: str, now_iso: str, action: str) -> dict | None:
+    """Operator only. release or commit. Does not invent a report."""
+
+    def work():
+        run = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if run is None:
+            return None
+        reservation = conn.execute(
+            "SELECT * FROM reservations WHERE id = ?",
+            (run["reservation_id"],),
+        ).fetchone()
+        if reservation is None or reservation["state"] not in {"unknown", "dispatching"}:
+            return {"changed": False, "run": dict(run)}
+        if action == "release":
+            released = _release_locked(
+                conn,
+                reservation["id"],
+                now_iso,
+                "Released by an operator. The operator recorded that this send did not run.",
+                allowed=("unknown", "dispatching"),
+            )
+            fresh = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            return {"changed": released, "run": dict(fresh)}
+        if action != "commit":
+            return {"changed": False, "run": dict(run)}
+        column = "free_committed" if reservation["source"] == "free" else "paid_committed"
+        updated = conn.execute(
+            """
+            UPDATE reservations
+            SET state = 'committed', updated_at = ?
+            WHERE id = ? AND state IN ('unknown', 'dispatching')
+            """,
+            (now_iso, reservation["id"]),
+        )
+        if updated.rowcount != 1:
+            fresh = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            return {"changed": False, "run": dict(fresh)}
+        conn.execute(
+            f"UPDATE ledger_accounts SET {column} = {column} + 1 WHERE user_id = ?",
+            (reservation["user_id"],),
+        )
+        conn.execute(
+            """
+            UPDATE runs
+            SET status = 'accepted', detail = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            ("An operator counted this test. No report was added.", now_iso, run_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO ledger_entries (
+              id, user_id, reservation_id, kind, source, amount, note, created_at
+            ) VALUES (?, ?, ?, 'commit', ?, 1, 'Counted one test by operator resolution. No report was written.', ?)
+            """,
+            (new_id(), reservation["user_id"], reservation["id"], reservation["source"], now_iso),
+        )
+        fresh = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return {"changed": True, "run": dict(fresh)}
 
     from app.db import tx
 

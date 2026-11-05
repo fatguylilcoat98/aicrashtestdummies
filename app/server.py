@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import re
@@ -39,6 +41,10 @@ from app.pages import (
 )
 
 log = logging.getLogger("actd")
+RECOVER_TEXT = (
+    "Password reset is unavailable. No mail provider is configured. "
+    "Submitting this page does not change a password and does not say whether an account exists."
+)
 
 ID_RE = re.compile(r"^[a-f0-9]{32}$")
 KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,80}$")
@@ -72,6 +78,7 @@ class App:
         # Open once so the schema exists before concurrent requests.
         conn = connect(config.db_path)
         conn.close()
+        self.recover()
 
     def handle(self, method: str, target: str, headers: dict[str, str], body: bytes, client: str = "local") -> Response:
         method = method.upper()
@@ -94,7 +101,7 @@ class App:
                 500,
                 message_page(
                     "Something went wrong",
-                    "That request failed. A credit is counted only after the engine accepts a run. A hold with no acceptance is released when it expires.",
+                    "That request failed. A credit already handed to the engine stays held until an operator resolves it.",
                 ),
             )
         if method == "HEAD":
@@ -108,9 +115,10 @@ class App:
         try:
             user = self._user(conn, headers, now)
             self._count(conn, now, user, path)
+            identity = client_identity(headers, client, self.config)
             if method == "GET":
                 return self._get(conn, path, query, user, now)
-            return self._post(conn, path, headers, body, user, client, now, now_iso)
+            return self._post(conn, path, headers, body, user, identity, now, now_iso)
         finally:
             conn.close()
 
@@ -127,11 +135,13 @@ class App:
         if path == "/account/signup":
             if user:
                 return self._redirect("/app")
-            return self._html(200, auth_page(mode="signup", next_path=_safe_next(query)))
+            return self._form_page("signup", next_path=_safe_next(query))
         if path == "/account/login":
             if user:
                 return self._redirect(_safe_next(query))
-            return self._html(200, auth_page(mode="login", next_path=_safe_next(query)))
+            return self._form_page("login", next_path=_safe_next(query))
+        if path == "/account/recover":
+            return self._html(200, message_page("Password reset is off", RECOVER_TEXT, user=user))
         if path == "/app":
             if not user:
                 return self._redirect("/account/login?next=/app")
@@ -139,7 +149,7 @@ class App:
         if path == "/app/billing":
             if not user:
                 return self._redirect("/account/login?next=/app/billing")
-            view = ledger.snapshot(conn, user["id"])
+            view = ledger.snapshot(conn, user["id"], lock_unverified=self.config.require_verified_email)
             return self._html(200, billing_page(user, view, payments.public_status(self.config)))
         if path == "/admin":
             if not user or user["role"] != "admin":
@@ -152,7 +162,7 @@ class App:
         if path == "/api/ledger":
             if not user:
                 return self._json(401, {"error": "auth_required"})
-            return self._json(200, ledger.snapshot(conn, user["id"]))
+            return self._json(200, ledger.snapshot(conn, user["id"], lock_unverified=self.config.require_verified_email))
         if path == "/api/runs":
             if not user:
                 return self._json(401, {"error": "auth_required"})
@@ -195,13 +205,34 @@ class App:
                 ),
             )
         form = _parse_body(headers, body)
+        if path == "/account/recover":
+            return self._html(200, message_page("Password reset is off", RECOVER_TEXT, user=user))
         if path == "/account/signup":
+            if not self._rate(conn, "signup", client, now, kind="signup"):
+                return self._form_page("signup", status=429, error=["Too many account attempts from this network. Wait and try again."])
+            if not self._form_ok(headers, form):
+                return self._form_page("signup", status=403, error=["Reload the page and submit it again."])
             return self._signup(conn, form, client, now)
         if path == "/account/login":
+            if not self._rate(conn, "auth", client, now):
+                return self._form_page("login", status=429, error=["Too many sign-in attempts from this network. Wait and try again."])
+            if not self._form_ok(headers, form):
+                return self._form_page("login", status=403, error=["Reload the page and submit it again."])
             return self._login(conn, form, client, now)
+        if path == "/api/sessions/revoke":
+            if not user:
+                return self._json(401, {"error": "auth_required"})
+            if not _csrf_ok(user, headers, form):
+                return self._json(403, {"error": "bad_csrf"})
+            conn.execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
+            response = self._json(200, {"ok": True})
+            response.headers.append(("Set-Cookie", f"{self.config.cookie_name}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"))
+            return response
         if path == "/account/logout":
-            if not user or not _csrf_ok(user, headers, form):
+            if not user:
                 return self._redirect("/account/login")
+            if not _csrf_ok(user, headers, form):
+                return self._html(403, message_page("Form rejected", "Reload the page and submit it again.", user=user))
             conn.execute("DELETE FROM sessions WHERE token_hash = ?", (user["token_hash"],))
             return self._redirect("/", clear_cookie=True)
         if path in {"/app/runs", "/api/runs"}:
@@ -227,6 +258,12 @@ class App:
                 return self._json(403, {"error": "bad_csrf"})
             run_id = path[len("/api/runs/") : -len("/cancel")]
             return self._cancel(conn, user, run_id, now_iso)
+        if path == "/api/operator/promote" or path == "/api/operator/verify" or (
+            path.startswith("/api/operator/runs/") and path.endswith("/resolve")
+        ):
+            if not self._operator_ok(headers):
+                return self._json(404, {"error": "not_found"})
+            return self._operator(conn, path, form, now_iso)
         return self._html(404, not_found())
 
     def health(self) -> dict:
@@ -243,6 +280,10 @@ class App:
             "customer_price": payment["price"],
             "collects_card_numbers": False,
             "historic_visitors": None,
+            "email_verification": "missing",
+            "admin_from_unverified_email": False,
+            "public_launch": False,
+            "operator_resolution": "configured" if self.config.operator_token else "missing",
         }
 
     def _gates(self) -> dict:
@@ -256,7 +297,7 @@ class App:
             "engine": "armed" if armed else "unavailable",
         }
 
-    def recover(self) -> int:
+    def recover(self) -> dict:
         conn = connect(self.config.db_path)
         try:
             from app.db import tx
@@ -264,13 +305,13 @@ class App:
             def work():
                 return ledger.sweep(conn, iso(utcnow()), self.config.reservation_ttl_seconds)
 
-            return tx(conn, work)
+            released = tx(conn, work)
+            unknown = ledger.quarantine_dispatching(conn, iso(utcnow()), 0)
+            return {"released_unsent": released, "unknown": unknown}
         finally:
             conn.close()
 
     def _signup(self, conn, form, client, now) -> Response:
-        if not self._rate(conn, "auth", client, now):
-            return self._html(429, auth_page(mode="signup", error=["Too many account attempts from this network. Wait and try again."]))
         email = normalize_email(form.get("email", ""))
         password = form.get("password", "")
         confirm = form.get("confirm", "")
@@ -283,18 +324,18 @@ class App:
         if password != confirm:
             problems.append("The two passwords do not match.")
         if problems:
-            return self._html(400, auth_page(mode="signup", error=problems, email=email or ""))
+            return self._form_page("signup", status=400, error=problems, email=email or "")
         from app.db import tx
 
         user_id = ledger.new_id()
-        role = "admin" if email in self.config.admin_emails else "user"
+        role = "user"
 
         def work():
             exists = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
             if exists:
                 return False
             conn.execute(
-                "INSERT INTO users (id, email, password_hash, created_at, role) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO users (id, email, password_hash, created_at, role, email_verified) VALUES (?, ?, ?, ?, ?, 0)",
                 (user_id, email, hash_password(password), iso(now), role),
             )
             ledger.ensure_account(conn, user_id, self.config.free_credits)
@@ -304,26 +345,37 @@ class App:
             created = tx(conn, work)
         except Exception as exc:
             log.error("signup failed (%s)", type(exc).__name__)
-            return self._html(500, auth_page(mode="signup", error=["The account was not created."], email=email))
+            return self._form_page("signup", status=500, error=["The account was not created."], email=email or "")
         if not created:
-            return self._html(409, auth_page(mode="signup", error=["An account with that email already exists."], email=email))
+            return self._form_page("signup", status=409, error=["An account with that email already exists."], email=email or "")
         return self._open_session(conn, user_id, email, role, now, "/app")
 
     def _login(self, conn, form, client, now) -> Response:
-        if not self._rate(conn, "auth", client, now):
-            return self._html(429, auth_page(mode="login", error=["Too many sign-in attempts from this network. Wait and try again."]))
         email = normalize_email(form.get("email", ""))
         password = form.get("password", "")
         next_path = _safe_next_value(form.get("next", "/app"))
+        if email and not self._rate(conn, "login-email", email, now):
+            return self._form_page(
+                "login",
+                status=429,
+                error=["Too many sign-in attempts for this email. Wait and try again."],
+                email=email,
+                next_path=next_path,
+            )
         row = None
         if email:
             row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
         if row is None or not verify_password(password, row["password_hash"] if row else ""):
             if row is None:
                 dummy_verify(password if isinstance(password, str) else "")
-            return self._html(401, auth_page(mode="login", error=["Email or password is wrong."], email=email or "", next_path=next_path))
-        role = "admin" if row["email"] in self.config.admin_emails else row["role"]
-        return self._open_session(conn, row["id"], row["email"], role, now, next_path)
+            return self._form_page(
+                "login",
+                status=401,
+                error=["Email or password is wrong."],
+                email=email or "",
+                next_path=next_path,
+            )
+        return self._open_session(conn, row["id"], row["email"], row["role"], now, next_path)
 
     def _open_session(self, conn, user_id, email, role, now, location) -> Response:
         token = new_token()
@@ -368,10 +420,15 @@ class App:
             question,
             now_iso,
             self.config.reservation_ttl_seconds,
+            lock_unverified=self.config.require_verified_email,
         )
         if not result["ok"]:
+            if result.get("error") == "verification_required":
+                if as_json:
+                    return self._json(403, {"error": "verification_required"})
+                return self._html(403, self._dashboard(conn, user, error=["Confirm email ownership before starting a test. No mail provider is configured."]))
             if as_json:
-                return self._json(402, {"error": "payment_required", "ledger": ledger.snapshot(conn, user["id"])})
+                return self._json(402, {"error": "payment_required", "ledger": ledger.snapshot(conn, user["id"], lock_unverified=self.config.require_verified_email)})
             return self._redirect("/app/billing")
         if not result["created"]:
             run = result["run"]
@@ -386,23 +443,40 @@ class App:
             if as_json:
                 return self._json(200, {"run": _public_run(run)})
             return self._redirect(f"/app/runs/{result['run_id']}")
+        will_call = not [item for item in engine.blockers(self.config) if item != "team_talk_absent"]
+        if will_call:
+            ledger.mark_dispatching(conn, result["reservation_id"], iso(utcnow()))
+            if self.config.after_dispatch:
+                self.config.after_dispatch({"run_id": result["run_id"], "reservation_id": result["reservation_id"]})
+            current = ledger.read_reservation(conn, result["reservation_id"])
+            if current is None or current["state"] != "dispatching":
+                run = ledger.read_run(conn, user["id"], result["run_id"])
+                if as_json:
+                    return self._json(200, {"run": _public_run(run)})
+                return self._redirect(f"/app/runs/{result['run_id']}")
         outcome = engine.invoke(self.config, run_id=result["run_id"], question=question)
+        now_done = iso(utcnow())
+        if outcome.disposition == "ambiguous":
+            recorded = ledger.mark_unknown(conn, result["reservation_id"], now_done, outcome.detail)
+            run = recorded.get("run") or ledger.read_run(conn, user["id"], result["run_id"])
+            if as_json:
+                return self._json(202, {"run": _public_run(run), "engine_blockers": outcome.blockers or []})
+            return self._redirect(f"/app/runs/{run['id']}")
         status = _run_status(outcome)
         finalized = ledger.finalize(
             conn,
             result["reservation_id"],
-            iso(utcnow()),
+            now_done,
             accepted=outcome.accepted,
             run_status=status,
             engine_code=outcome.code,
             engine_ref=outcome.engine_ref,
-            result_json=outcome.result_json,
+            result_json=outcome.result_json if outcome.accepted else None,
             detail=outcome.detail,
         )
         run = finalized.get("run") or ledger.read_run(conn, user["id"], result["run_id"])
         if as_json:
-            code = 200 if outcome.accepted or finalized.get("state") == "released" else 200
-            return self._json(code, {"run": _public_run(run), "engine_blockers": outcome.blockers or []})
+            return self._json(200, {"run": _public_run(run), "engine_blockers": outcome.blockers or []})
         return self._redirect(f"/app/runs/{run['id']}")
 
     def _cancel(self, conn, user, run_id, now_iso) -> Response:
@@ -419,7 +493,7 @@ class App:
             payload = {"error": "payments_disabled", "price": None, "provider": None, "collects_card_numbers": False}
             if as_json:
                 return self._json(403, payload)
-            return self._html(403, billing_page(user, ledger.snapshot(conn, user["id"]), status))
+            return self._html(403, billing_page(user, ledger.snapshot(conn, user["id"], lock_unverified=self.config.require_verified_email), status))
         checkout_id = ledger.new_id()
         conn.execute(
             "INSERT INTO checkouts (id, user_id, status, created_at) VALUES (?, ?, 'pending', ?)",
@@ -437,6 +511,8 @@ class App:
         return self._html(200, message_page("Checkout record created", payload["note"], user=user))
 
     def _webhook(self, conn, headers, body, now, now_iso) -> Response:
+        if not self.config.payments_ready():
+            return self._json(403, {"error": "payments_disabled", "provider": None, "integration": "none"})
         decision = payments.parse_event(
             self.config,
             body,
@@ -461,7 +537,7 @@ class App:
         return self._json(200, {"ok": True, "duplicate": granted["duplicate"], "credits": granted["credits"]})
 
     def _dashboard(self, conn, user, error=None, question="", idempotency_key=None) -> str:
-        view = ledger.snapshot(conn, user["id"])
+        view = ledger.snapshot(conn, user["id"], lock_unverified=self.config.require_verified_email)
         runs = ledger.list_runs(conn, user["id"])
         armed = engine.blockers(self.config)
         hard = [item for item in armed if item != "team_talk_absent"]
@@ -498,7 +574,7 @@ class App:
         if parse_iso(row["expires_at"]) <= now:
             conn.execute("DELETE FROM sessions WHERE token_hash = ?", (row["token_hash"],))
             return None
-        role = "admin" if row["email"] in self.config.admin_emails else row["role"]
+        role = row["role"]
         return {
             "id": row["id"],
             "email": row["email"],
@@ -508,10 +584,67 @@ class App:
         }
 
     def _rate(self, conn, bucket_name, material, now, kind="auth") -> bool:
-        limit = self.config.auth_limit if kind == "auth" else self.config.start_limit
-        window = self.config.auth_window_seconds if kind == "auth" else self.config.start_window_seconds
+        if kind == "signup":
+            limit = self.config.signup_limit
+            window = self.config.auth_window_seconds
+        elif kind == "start":
+            limit = self.config.start_limit
+            window = self.config.start_window_seconds
+        else:
+            limit = self.config.auth_limit
+            window = self.config.auth_window_seconds
         bucket = kind + ":" + client_bucket(self.config.secret, bucket_name + ":" + material)
         return analytics.allow(conn, bucket, int(now.timestamp()), window, limit)
+
+    def _form_page(self, mode: str, status: int = 200, **kwargs) -> Response:
+        token = new_csrf()
+        response = self._html(status, auth_page(mode=mode, form_csrf=token, **kwargs))
+        response.headers.append(("Set-Cookie", self._named_cookie(self.config.form_cookie_name, token, 3600)))
+        return response
+
+    def _form_ok(self, headers, form) -> bool:
+        expected = _cookie(headers.get("cookie", ""), self.config.form_cookie_name) or ""
+        sent = str(form.get("csrf", ""))
+        if not expected or not sent or len(expected) != len(sent):
+            return False
+        return hmac.compare_digest(expected, sent)
+
+    def _operator_ok(self, headers) -> bool:
+        expected = self.config.operator_token or ""
+        header = headers.get("authorization", "")
+        prefix = "Bearer "
+        if not expected or not header.startswith(prefix):
+            return False
+        token = header[len(prefix) :].strip()
+        if len(token) != len(expected):
+            return False
+        return hmac.compare_digest(token, expected)
+
+    def _operator(self, conn, path, form, now_iso) -> Response:
+        if path == "/api/operator/promote":
+            email = normalize_email(str(form.get("email", "")))
+            row = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone() if email else None
+            if row is None:
+                return self._json(404, {"error": "not_found"})
+            conn.execute("UPDATE users SET role = 'admin' WHERE id = ?", (row["id"],))
+            return self._json(200, {"ok": True, "role": "admin"})
+        if path == "/api/operator/verify":
+            email = normalize_email(str(form.get("email", "")))
+            row = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone() if email else None
+            if row is None:
+                return self._json(404, {"error": "not_found"})
+            conn.execute("UPDATE users SET email_verified = 1 WHERE id = ?", (row["id"],))
+            return self._json(200, {"ok": True, "email_verified": True})
+        run_id = path[len("/api/operator/runs/") : -len("/resolve")]
+        if not ID_RE.match(run_id):
+            return self._json(404, {"error": "not_found"})
+        action = str(form.get("action", ""))
+        if action not in {"release", "commit"}:
+            return self._json(400, {"error": "bad_action"})
+        result = ledger.resolve_unknown(conn, run_id, now_iso, action)
+        if result is None:
+            return self._json(404, {"error": "not_found"})
+        return self._json(200, {"changed": result["changed"], "run": _public_run(result["run"])})
 
     def _count(self, conn, now, user, path) -> None:
         if _is_asset(path):
@@ -541,11 +674,12 @@ class App:
         cache = "no-cache" if candidate.suffix.lower() == ".html" else "public, max-age=3600"
         return Response(200, [("Content-Type", kind), ("Cache-Control", cache), ("X-Content-Type-Options", "nosniff")], data)
 
-    def _cookie(self, token: str, max_age: int) -> str:
+    def _named_cookie(self, name: str, token: str, max_age: int) -> str:
         secure = "; Secure" if self.config.cookie_secure else ""
-        return (
-            f"{self.config.cookie_name}={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age}{secure}"
-        )
+        return f"{name}={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age}{secure}"
+
+    def _cookie(self, token: str, max_age: int) -> str:
+        return self._named_cookie(self.config.cookie_name, token, max_age)
 
     def _security(self, headers: list[tuple[str, str]]) -> list[tuple[str, str]]:
         headers = list(headers)
@@ -586,6 +720,21 @@ class App:
         if path.startswith("/api/"):
             return self._json(403, {"error": "bad_csrf"})
         return self._html(403, message_page("Form rejected", "Reload the page and submit it again.", user=user))
+
+
+def client_identity(headers: dict, socket_peer: str, config: Config) -> str:
+    """Rate limits use the socket peer. X-Forwarded-For is ignored unless that peer is trusted."""
+    peer = socket_peer or "local"
+    if peer not in config.trusted_proxies or config.trusted_proxy_hops <= 0:
+        return peer
+    parts = [item.strip() for item in headers.get("x-forwarded-for", "").split(",") if item.strip()]
+    index = len(parts) - int(config.trusted_proxy_hops)
+    if index < 0 or index >= len(parts):
+        return peer
+    candidate = parts[index]
+    if len(candidate) > 80 or any(ord(ch) < 33 for ch in candidate):
+        return peer
+    return candidate
 
 
 def _cookie(header: str, name: str) -> str | None:

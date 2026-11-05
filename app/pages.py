@@ -14,7 +14,10 @@ BRAND_SVG = (
 STATUS_LABEL = {
     "reserved": "Credit held",
     "engine_unavailable": "Not sent",
+    "unknown": "Outcome unknown",
+    "dispatching": "Sending",
     "accepted": "Accepted, no report",
+    "in_progress": "In progress",
     "completed": "Payload received",
     "failed": "Failed after acceptance",
     "cancelled": "Cancelled",
@@ -109,7 +112,7 @@ def errors(items: list[str]) -> str:
     return f'<div class="banner banner-bad" role="alert"><ul class="plain">{lis}</ul></div>'
 
 
-def auth_page(*, mode: str, csrf_unused: str = "", error: list[str] | None = None, email: str = "", next_path: str = "/app") -> str:
+def auth_page(*, mode: str, form_csrf: str, error: list[str] | None = None, email: str = "", next_path: str = "/app") -> str:
     login = mode == "login"
     title = "Sign in" if login else "Create an account"
     action = "/account/login" if login else "/account/signup"
@@ -132,6 +135,7 @@ def auth_page(*, mode: str, csrf_unused: str = "", error: list[str] | None = Non
       <p class="lede">{esc(intro)}</p>
       {errors(error or [])}
       <form class="card form" method="post" action="{action}" novalidate>
+        <input type="hidden" name="csrf" value="{esc(form_csrf)}">
         <input type="hidden" name="next" value="{esc(next_path)}">
         <div class="field">
           <label for="email">Email</label>
@@ -210,7 +214,22 @@ def dashboard(
     budget: str = "",
 ) -> str:
     blocked = view["remaining"] <= 0
-    if blocked:
+    held = view["free_held"] + view["paid_held"]
+    if view.get("credits_locked"):
+        starter = """
+        <section class="card" id="start">
+          <h2>Included tests are locked</h2>
+          <p>This account has not confirmed email ownership. No test is sent, and the five included credits stay unused.</p>
+        </section>
+        """
+    elif blocked and held:
+        starter = """
+        <section class="card" id="start">
+          <h2>A test is still unresolved</h2>
+          <p>One or more credits are held. A lost engine reply stays held so it cannot be spent again. Nothing else is sent until that hold is resolved.</p>
+        </section>
+        """
+    elif blocked:
         starter = """
         <section class="card" id="start">
           <h2>Payment required before another test</h2>
@@ -222,7 +241,7 @@ def dashboard(
         if engine_armed:
             banner = (
                 '<div class="banner"><p>The engine binding is armed. A credit is counted only if the engine accepts the run. '
-                f'Budget cap for this process: {esc(budget)} USD.</p></div>'
+                'If the reply is lost, the credit stays held. The budget has to be enforced by the engine, not by a number in this form.</p></div>'
             )
         else:
             banner = (
@@ -245,11 +264,18 @@ def dashboard(
           </form>
         </section>
         """
+    lock = ""
+    if view.get("credits_locked"):
+        lock = (
+            '<div class="banner banner-warn"><p>Email ownership is not confirmed, so the five included tests stay locked. '
+            "No mail provider is configured, and this server does not send mail.</p></div>"
+        )
     main = f"""
     <div class="shell">
       <p class="kicker">Your account</p>
       <h1>Crash tests</h1>
-      <p class="lede">Five tests are included. A test counts only after the engine accepts it.</p>
+      <p class="lede">Five tests are included. A test is counted when the engine accepts it, or when an operator resolves an unknown send as used. A lost reply stays held. It is not treated as a finished report.</p>
+      {lock}
       {_allowance(view)}
       {starter}
       <section class="card">
@@ -270,7 +296,11 @@ def dashboard(
 def run_page(user: dict, run: dict) -> str:
     label = STATUS_LABEL.get(run["status"], run["status"])
     credit = "Released back to the account."
-    if run["status"] in {"accepted", "completed", "failed"}:
+    if run["status"] == "unknown":
+        credit = "Held. The reply was lost, so this test still counts against the five until an operator resolves it."
+    elif run["status"] == "dispatching":
+        credit = "Held while the request is in flight."
+    elif run["status"] in {"accepted", "completed", "failed"}:
         credit = "Counted. The engine had already accepted the run."
     elif run["status"] == "reserved":
         credit = "Held. Not counted yet."
