@@ -274,7 +274,7 @@ def dashboard(
     <div class="shell">
       <p class="kicker">Your account</p>
       <h1>Crash tests</h1>
-      <p class="lede">Five tests are included. A test is counted when the engine accepts it, or when an operator resolves an unknown send as used. A lost reply stays held. It is not treated as a finished report.</p>
+      <p class="lede">Five tests are included. A test counts when the engine accepts it. A lost reply stays held.</p>
       {lock}
       {_allowance(view)}
       {starter}
