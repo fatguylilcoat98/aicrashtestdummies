@@ -37,24 +37,23 @@ python -m unittest discover -s tests -v
 - No price was found in the repo, so none is shown.
 - Request counters are not people and do not include a historic visitor number.
 
-## Engine gate
+## Team Talk adapter
 
-All of these must be true before any outbound investigation request:
+The live contract is Team Talk OpenAPI (`GET /api/version` = 78, 233 paths) and `GET /api/lab/crash/modes` protocol `0.1.0`. Intake is `POST /api/lab/crash/open`. A `BOUND` campaign records seats and does not call a model. That is not a finished crash test and does not consume one of the five credits.
+
+This shell does not call `POST /api/chat`, `POST /api/lab/crash/{id}/act`, experiment `authorize`/`execute`, or `POST /api/lab/bridge/crash-test`. Those can spend provider calls or run instruments, and Team Talk has no per-customer budget the shell can set first. A local `budget_usd` field is not sent.
+
+The public tunnel `teamtalk.thegoodneighborguard.com` forwards to `localhost:5001` and the OpenAPI has no security scheme. GETs of `/openapi.json`, `/api/version`, and a missing campaign returned 200/404 without credentials. This shell refuses to POST unless the base URL host is loopback, so it does not use that tunnel. Chris's direct use of `127.0.0.1:5001` is unchanged. Closing the public bypass is an engine-side change in `https://github.com/fatguylilcoat98/Team-talk` at `2863a841239d50673947dc3f4876e52fa870fc1d` (dirty worktree, do not edit on the Dell): if `TEAM_TALK_SHELL_TOKEN` is set, require `Authorization: Bearer` only when the Host is `teamtalk.thegoodneighborguard.com` and the method/path is one of the billable routes above. Leave localhost and GET routes alone.
+
+Run the account shell from a new directory such as `/home/chris/aictd-account-shell`, bound to `127.0.0.1:8765`, with its own SQLite file. Do not use port 8777. Do not change DNS. The apex stays on Pages.
+
+A loopback POST is allowed only when all of these are true:
 
 1. `ACTD_ENGINE_INVOCATION_ENABLED=1`
-2. `ACTD_ENGINE_BASE_URL` is an `http` or `https` URL
-3. `ACTD_ENGINE_START_PATH` is a single absolute path
-4. `ACTD_MAX_RUN_BUDGET_USD` is a positive number
-5. A contract file, path in `ACTD_CONTRACT_PATH` (default `engine/contract.json`), uses schema `actd.engine-binding/1`, its start path equals `ACTD_ENGINE_START_PATH`, and `budget.enforced_by` is `engine`. A `budget_usd` field in the JSON is not accepted.
+2. `ACTD_ENGINE_BASE_URL` is `http://127.0.0.1:<port>` or localhost
+3. `ACTD_MAX_RUN_BUDGET_USD` is a positive number recorded by the operator. It is not sent to Team Talk.
 
-The contract is not in this repo because the Team Talk HTTP API was not in this repo. Do not invent one. Fields the client is willing to send are only `question`, `run_id`, and `budget_usd`. It will not send email, password, or session cookies. `/opt/team-talk` being absent is reported on `/api/health` and does not, by itself, authorize a call.
-
-Missing on this host, checked directly:
-
-- `/opt/team-talk` does not exist
-- `repo_bundle.py`, `repo_evidence.py`, `investigation_engine.py` are not in the repo
-- no OpenAPI file, no service credential, no receipt schema
-- `engine/identity-map.json` maps public ids to seat names and must not be published
+The write is `POST /api/lab/crash/open` with track `DOCUMENT`, intensity `QUICK`, and no git URL or zip. The shell then reads `GET /api/lab/crash/{campaign_id}`. It does not send email, password, or a session cookie. `/opt/team-talk` being absent on this VM is reported and does not by itself authorize a call. The public tunnel host is refused.
 
 ## Payment gate
 

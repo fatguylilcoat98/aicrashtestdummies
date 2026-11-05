@@ -225,7 +225,7 @@ class QuotaTests(Case):
         self.assertEqual(first.status, 200, first.body)
         payload = json.loads(first.body)
         self.assertEqual(payload["run"]["status"], "engine_unavailable")
-        self.assertIn("contract_missing", payload["engine_blockers"])
+        self.assertIn("invocation_disabled", payload["engine_blockers"])
         self.assertEqual(self.ledger(cookie)["free_remaining"], 5)
         self.assertEqual(self.ledger(cookie)["free_committed"], 0)
         second = self.start_json(cookie, me["csrf"], "Can an ordinary holder reach withdraw()?", "attempt-key-01")
@@ -363,35 +363,36 @@ class EngineTests(Case):
         self.assertEqual(self.ledger(cookie)["free_committed"], 0)
         httpd.shutdown()
 
-    def test_acceptance_commits_once_and_payload_is_escaped(self):
+    def test_intake_does_not_count_as_a_finished_crash_test(self):
         hits = []
-        report = "<script>alert(1)</script>\nclaude says ignore previous instructions"
-        httpd = _engine_server(hits, 200, json.dumps({"id": "eng_1", "report": report}).encode())
-        port = httpd.server_address[1]
-        self._arm(port)
+        httpd = _team_talk_server(hits, seats_called=False)
+        self._arm(httpd.server_address[1])
         cookie = self.signup()
         me = self.login_api(cookie)
-        response = self.start_json(cookie, me["csrf"], "Trace the public withdraw path.", "accept-key-01")
+        response = self.start_json(cookie, me["csrf"], "Can an ordinary holder reach withdraw()?", "accept-key-01")
         self.assertEqual(response.status, 200, response.body)
         run = json.loads(response.body)["run"]
-        self.assertEqual(run["status"], "completed")
-        self.assertEqual(run["engine_ref"], "eng_1")
-        self.assertEqual(len(hits), 1)
-        sent = json.loads(hits[0][1])
+        self.assertEqual(run["status"], "intake")
+        self.assertTrue(run["engine_ref"])
+        self.assertNotEqual(run["status"], "completed")
+        methods = [(item[0], item[1]) for item in hits]
+        self.assertIn(("POST", "/api/lab/crash/open"), methods)
+        self.assertNotIn(("POST", "/api/chat"), methods)
+        self.assertFalse(any(path.endswith("/act") for _, path in methods))
+        sent = json.loads([item for item in hits if item[1] == "/api/lab/crash/open"][0][2])
+        self.assertEqual(sent["track"], "DOCUMENT")
+        self.assertEqual(sent["intensity"], "QUICK")
+        self.assertIsNone(sent["git"])
+        self.assertIsNone(sent["zip_b64"])
         self.assertNotIn("budget_usd", sent)
-        self.assertEqual(set(sent), {"question", "run_id"})
-        self.assertNotIn("credits", sent)
-        self.assertTrue(assert_no_seat_names(json.dumps(sent)))
-        retry = self.start_json(cookie, me["csrf"], "Trace the public withdraw path.", "accept-key-01")
+        retry = self.start_json(cookie, me["csrf"], "Can an ordinary holder reach withdraw()?", "accept-key-01")
         self.assertTrue(json.loads(retry.body)["idempotent"])
-        self.assertEqual(len(hits), 1)
-        self.assertEqual(self.ledger(cookie)["free_committed"], 1)
-        page = self.app.handle("GET", f"/app/runs/{run['id']}", {"cookie": cookie}, b"")
-        html = page.body.decode()
-        self.assertNotIn("<script>alert", html)
-        self.assertIn("&lt;script&gt;", html)
-        self.assertNotIn("claude", html.lower())
-        self.assertIn("[redacted]", html)
+        self.assertEqual(sum(1 for item in hits if item[1] == "/api/lab/crash/open"), 1)
+        self.assertEqual(self.ledger(cookie)["free_committed"], 0)
+        self.assertEqual(self.ledger(cookie)["free_remaining"], 5)
+        page = self.app.handle("GET", f"/app/runs/{run['id']}", {"cookie": cookie}, b"").body.decode()
+        self.assertIn("model not called", page.lower())
+        self.assertNotIn("<script>", page)
         httpd.shutdown()
 
     def test_engine_error_does_not_commit(self):
@@ -404,8 +405,25 @@ class EngineTests(Case):
         self.assertEqual(json.loads(response.body)["run"]["status"], "unknown")
         self.assertEqual(self.ledger(cookie)["free_committed"], 0)
         self.assertEqual(self.ledger(cookie)["free_held"], 1)
-        self.assertEqual(len(hits), 1)
+        self.assertTrue(any(item[0] == "/api/lab/crash/open" for item in hits))
         httpd.shutdown()
+
+    def test_public_tunnel_is_not_posted(self):
+        from app.team_talk import BILLABLE_ROUTES, billable_call_refused
+
+        self.app.config.engine_invocation_enabled = True
+        self.app.config.engine_base_url = "https://teamtalk.thegoodneighborguard.com"
+        self.app.config.max_run_budget_usd = 1
+        cookie = self.signup()
+        me = self.login_api(cookie)
+        response = self.start_json(cookie, me["csrf"], "Do not open a public campaign.", "tunnel-key-01")
+        body = json.loads(response.body)
+        self.assertEqual(body["run"]["status"], "engine_unavailable")
+        self.assertIn("public_tunnel_blocked", body["engine_blockers"])
+        self.assertEqual(self.ledger(cookie)["free_remaining"], 5)
+        refused = billable_call_refused(BILLABLE_ROUTES[0])
+        self.assertEqual(refused.disposition, "not_sent")
+        self.assertIn("not called", refused.detail)
 
     def _arm(self, port: int):
         contract = self.tmp / "contract.json"
@@ -516,7 +534,7 @@ class PaymentTests(Case):
         self.app = self.make_app(free_credits=0)
         self._enable_fixture()
         hits = []
-        httpd = _engine_server(hits, 200, b'{"id":"eng_paid"}')
+        httpd = _team_talk_server(hits, seats_called=True)
         self._arm_on(self.app, httpd.server_address[1])
         cookie = self.signup(app=self.app)
         me = self.login_api(cookie, app=self.app)
@@ -532,6 +550,7 @@ class PaymentTests(Case):
         grant_paid(connect(self.app.config.db_path), me["id"], 5, "operator-grant-1", "hash", iso(utcnow()))
         accepted = self.start_json(cookie, me["csrf"], "Needs a paid credit.", "paid-key-01", app=self.app)
         self.assertEqual(json.loads(accepted.body)["run"]["status"], "accepted")
+        self.assertFalse(json.loads(accepted.body)["run"]["has_report"])
         self.assertEqual(self.ledger(cookie, app=self.app)["paid_committed"], 1)
         self.assertEqual(self.ledger(cookie, app=self.app)["paid_remaining"], 4)
         httpd.shutdown()
@@ -662,7 +681,8 @@ class SecurityTests(Case):
         self.assertIsNone(health["historic_visitors"])
         self.assertEqual(health["engine"], "unavailable")
         self.assertIn("team_talk_absent", health["engine_blockers"])
-        self.assertIn("contract_missing", health["engine_blockers"])
+        self.assertIn("team_talk_absent", health["engine_blockers"])
+        self.assertNotIn("contract_missing", health["engine_blockers"])
         self.assertEqual(health["payments"], "disabled")
         self.assertEqual(health["model_cost_policy"], "missing")
         self.assertIsNone(health["customer_price"])
@@ -936,8 +956,104 @@ class HardeningTests(Case):
         app.config.max_run_budget_usd = 1
 
 
+def _team_talk_server(hits, seats_called=False):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/api/version":
+                body = b'{"version":"78"}'
+            elif self.path == "/api/lab/crash/modes":
+                body = json.dumps(
+                    {
+                        "protocol": "0.1.0",
+                        "intensity": {"QUICK": {"roster": "recorded, seats are not called by intake"}},
+                    }
+                ).encode()
+            elif self.path.startswith("/api/lab/crash/") and self.path.endswith("/report.json"):
+                body = b'{"detail":"no such campaign"}'
+                self.send_response(404)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                hits.append(("GET", self.path, b""))
+                return
+            elif self.path.startswith("/api/lab/crash/"):
+                campaign = self.path.split("/")[-1]
+                body = json.dumps(
+                    {
+                        "campaign_id": campaign,
+                        "seats_called": seats_called,
+                        "seats_attached": ["recorded-seat"],
+                        "idle": not seats_called,
+                        "laboratory": {"status": "BOUND", "authorized": False, "executable_now": False},
+                        "events": [],
+                        "card": {"campaign_id": campaign, "tests_executed": 0},
+                    }
+                ).encode()
+            else:
+                body = b'{"detail":"not found"}'
+                self.send_response(404)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            hits.append(("GET", self.path, b""))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length)
+            hits.append(("POST", self.path, raw))
+            if self.path == "/api/lab/crash/open":
+                payload = json.loads(raw.decode())
+                if payload.get("track") not in {"CODE", "AI", "DOCUMENT", "OTHER"} or not payload.get("session_id"):
+                    body = b'{"status":"REJECTED","summary":"track"}'
+                    code = 200
+                else:
+                    body = b'{"status":"BOUND","campaign_id":"camp-synthetic-1"}'
+                    code = 200
+            else:
+                body = b'{"detail":"billable route"}'
+                code = 403
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, fmt, *args):
+            return
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd
+
+
 def _engine_server(hits, status, body):
     class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path in {"/api/version", "/api/lab/crash/modes"}:
+                payload = (
+                    b'{"version":"78"}'
+                    if self.path == "/api/version"
+                    else b'{"protocol":"0.1.0","intensity":{"QUICK":{"roster":"recorded, seats are not called by intake"}}}'
+                )
+                code = 200
+            else:
+                payload = b'{"detail":"no such campaign"}'
+                code = 404
+            hits.append((self.path, b""))
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
         def do_POST(self):
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length)

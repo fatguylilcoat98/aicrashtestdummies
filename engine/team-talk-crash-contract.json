@@ -1,0 +1,41 @@
+{
+  "source": "Live GET https://teamtalk.thegoodneighborguard.com/openapi.json and /api/lab/crash/modes on 2026-11-05",
+  "openapi_title": "Team Talk",
+  "openapi_paths": 233,
+  "api_version": "78",
+  "git": {
+    "repo": "https://github.com/fatguylilcoat98/Team-talk",
+    "commit": "2863a841239d50673947dc3f4876e52fa870fc1d",
+    "branch": "research/adversarial-mechanisms"
+  },
+  "modes_protocol": "0.1.0",
+  "tracks": ["CODE", "AI", "DOCUMENT", "OTHER"],
+  "intensity_quick_roster": "recorded, seats are not called by intake",
+  "intake": {
+    "method": "POST",
+    "path": "/api/lab/crash/open",
+    "required": ["session_id", "track"],
+    "bound_status": "BOUND",
+    "bound_id_field": "campaign_id"
+  },
+  "state": {
+    "method": "GET",
+    "path": "/api/lab/crash/{campaign_id}",
+    "model_called_field": "seats_called",
+    "missing_campaign_status": 404,
+    "missing_campaign_body": {"detail": "no such campaign"}
+  },
+  "reports": [
+    "GET /api/lab/crash/{campaign_id}/report.json",
+    "GET /api/lab/crash/{campaign_id}/report.pdf",
+    "GET /api/lab/crash/{campaign_id}/report.sarif"
+  ],
+  "billable_routes_not_called_by_this_shell": [
+    "POST /api/chat",
+    "POST /api/lab/crash/{campaign_id}/act",
+    "POST /api/lab/experiments/{experiment_id}/authorize",
+    "POST /api/lab/experiments/{experiment_id}/execute",
+    "POST /api/lab/bridge/crash-test"
+  ],
+  "customer_auth_in_openapi": false
+}

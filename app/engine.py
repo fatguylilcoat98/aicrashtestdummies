@@ -39,21 +39,18 @@ def blockers(config: Config) -> list[str]:
         found.append("base_url_missing")
     elif not _allowed_base(config.engine_base_url):
         found.append("base_url_rejected")
-    if not config.engine_start_path:
-        found.append("start_path_missing")
-    elif not config.engine_start_path.startswith("/") or config.engine_start_path.startswith("//"):
-        found.append("start_path_rejected")
     if config.max_run_budget_usd is None or config.max_run_budget_usd <= 0:
         found.append("budget_missing")
     contract_path = config.resolved_contract_path
     loaded = _load_contract(contract_path) if contract_path.is_file() else None
-    if not contract_path.is_file():
-        found.append("contract_missing")
-    elif loaded is None:
-        found.append("contract_rejected")
-    elif config.engine_start_path and loaded["start"]["path"] != config.engine_start_path:
-        found.append("start_path_mismatch")
-    elif not _budget_enforced(loaded):
+    host = ""
+    if config.engine_base_url and _allowed_base(config.engine_base_url):
+        from urllib.parse import urlparse
+
+        host = (urlparse(config.engine_base_url).hostname or "").lower()
+    if host and host not in {"127.0.0.1", "localhost", "::1"}:
+        found.append("public_tunnel_blocked")
+    if loaded is not None and not _budget_enforced(loaded):
         found.append("budget_not_engine_enforced")
     if not Path("/opt/team-talk").exists():
         found.append("team_talk_absent")
@@ -69,8 +66,9 @@ def describe(code: str) -> str:
         "start_path_rejected": "The configured start path is not a single absolute path.",
         "start_path_mismatch": "The configured start path does not match the contract, so nothing was called.",
         "budget_missing": "No per-run budget cap is configured, so a model call is refused.",
-        "budget_not_engine_enforced": "The contract does not say the engine enforces the budget. A budget number in JSON is not a control, so nothing was called.",
-        "contract_missing": "engine/contract.json is not in the repo. There is no sanctioned request schema.",
+        "budget_not_engine_enforced": "A local contract file does not say the engine enforces the budget, so nothing was called.",
+        "public_tunnel_blocked": "The engine URL is not loopback. The public Team Talk tunnel has no customer auth, so this shell does not POST to it.",
+        "contract_missing": "No local contract file is required. Team Talk's live OpenAPI is the contract.",
         "team_talk_absent": "The Team Talk process documented at /opt/team-talk is not on this host.",
         "contract_rejected": "The contract file is present but does not match the binding this app can send.",
         "engine_http_error": "The engine returned a complete rejection. The credit was released.",
@@ -95,94 +93,9 @@ def invoke(config: Config, *, run_id: str, question: str) -> EngineOutcome:
         )
     if config.engine_transport is not None:
         return config.engine_transport(run_id=run_id, question=question)
-    contract = _load_contract(config.resolved_contract_path)
-    if contract is None:
-        return EngineOutcome(
-            accepted=False,
-            disposition="not_sent",
-            code="engine_unavailable",
-            detail=describe("contract_rejected"),
-            blockers=reasons + ["contract_rejected"],
-        )
-    payload = _payload(contract, run_id=run_id, question=question)
-    url = config.engine_base_url.rstrip("/") + contract["start"]["path"]
-    body = json.dumps(payload).encode("utf-8")
-    request = Request(
-        url,
-        data=body,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Idempotency-Key": run_id,
-        },
-    )
-    try:
-        opener = build_opener(_NoRedirect())
-        with opener.open(request, timeout=3) as response:
-            raw = response.read(64_000)
-            status = getattr(response, "status", 200)
-    except HTTPError as exc:
-        ambiguous = exc.code in AMBIGUOUS_HTTP
-        return EngineOutcome(
-            accepted=False,
-            disposition="ambiguous" if ambiguous else "rejected",
-            code="unknown" if ambiguous else "engine_unavailable",
-            detail=describe("engine_ambiguous" if ambiguous else "engine_http_error"),
-            blockers=[f"http_{exc.code}"],
-        )
-    except TimeoutError:
-        return _ambiguous("timeout")
-    except URLError as exc:
-        if _refused(exc):
-            return EngineOutcome(
-                accepted=False,
-                disposition="not_sent",
-                code="engine_unavailable",
-                detail=describe("engine_unreachable"),
-                blockers=["connection_refused"],
-            )
-        return _ambiguous("url_error")
-    except OSError:
-        return _ambiguous("os_error")
-    if status >= 400:
-        return EngineOutcome(
-            accepted=False,
-            disposition="ambiguous" if status in AMBIGUOUS_HTTP else "rejected",
-            code="unknown" if status in AMBIGUOUS_HTTP else "engine_unavailable",
-            detail=describe("engine_ambiguous" if status in AMBIGUOUS_HTTP else "engine_http_error"),
-            blockers=[f"http_{status}"],
-        )
-    try:
-        parsed = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError):
-        return _ambiguous("bad_json")
-    if not isinstance(parsed, dict):
-        return _ambiguous("bad_json")
-    accept_field = contract["accept_field"]
-    ref = parsed.get(accept_field)
-    if not isinstance(ref, str) or not ref.strip():
-        return EngineOutcome(
-            accepted=False,
-            disposition="rejected",
-            code="engine_unavailable",
-            detail=describe("engine_rejected"),
-            result_json=json.dumps(parsed)[:20_000],
-            blockers=["missing_acceptance"],
-        )
-    report = parsed.get("report")
-    completed = isinstance(report, str) and bool(report.strip())
-    return EngineOutcome(
-        accepted=True,
-        disposition="accepted",
-        code="completed" if completed else "accepted",
-        detail="The engine accepted the run. This site did not write a report of its own."
-        if not completed
-        else "The engine returned a payload. It is shown as text.",
-        engine_ref=ref.strip()[:200],
-        result_json=json.dumps(parsed)[:20_000],
-        blockers=reasons,
-    )
+    from app.team_talk import intake
+
+    return intake(config, run_id=run_id, question=question)
 
 
 class _NoRedirect(HTTPRedirectHandler):

@@ -284,6 +284,9 @@ class App:
             "admin_from_unverified_email": False,
             "public_launch": False,
             "operator_resolution": "configured" if self.config.operator_token else "missing",
+            "team_talk_contract": "openapi-233-paths-version-78",
+            "billable_engine_routes": "blocked",
+            "public_tunnel_unauthenticated": True,
         }
 
     def _gates(self) -> dict:
@@ -826,8 +829,24 @@ def _public_run(run: dict | None) -> dict | None:
         "detail": run.get("detail"),
         "created_at": run["created_at"],
         "updated_at": run.get("updated_at"),
-        "has_report": bool(run.get("result_json")),
+        "has_report": _has_report(run),
     }
+
+
+def _has_report(run: dict) -> bool:
+    raw = run.get("result_json")
+    if not raw:
+        return False
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(data, dict):
+        return False
+    report = data.get("report")
+    if isinstance(report, str):
+        return bool(report.strip())
+    return isinstance(report, dict) and bool(report)
 
 
 def _public_runs(runs: list[dict]) -> list[dict]:
@@ -835,15 +854,12 @@ def _public_runs(runs: list[dict]) -> list[dict]:
 
 
 def _run_status(outcome: engine.EngineOutcome) -> str:
+    if outcome.disposition == "intake":
+        return "intake"
     if not outcome.accepted:
         return "engine_unavailable"
-    if outcome.result_json:
-        try:
-            data = json.loads(outcome.result_json)
-        except json.JSONDecodeError:
-            data = None
-        if isinstance(data, dict) and isinstance(data.get("report"), str) and data["report"].strip():
-            return "completed"
+    if outcome.code == "completed":
+        return "completed"
     return "accepted"
 
 

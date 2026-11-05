@@ -14,6 +14,7 @@ BRAND_SVG = (
 STATUS_LABEL = {
     "reserved": "Credit held",
     "engine_unavailable": "Not sent",
+    "intake": "Opened, model not called",
     "unknown": "Outcome unknown",
     "dispatching": "Sending",
     "accepted": "Accepted, no report",
@@ -296,7 +297,9 @@ def dashboard(
 def run_page(user: dict, run: dict) -> str:
     label = STATUS_LABEL.get(run["status"], run["status"])
     credit = "Released back to the account."
-    if run["status"] == "unknown":
+    if run["status"] == "intake":
+        credit = "Not counted. Opening a campaign records seats and does not call a model."
+    elif run["status"] == "unknown":
         credit = "Held. The reply was lost, so this test still counts against the five until an operator resolves it."
     elif run["status"] == "dispatching":
         credit = "Held while the request is in flight."
@@ -315,7 +318,7 @@ def run_page(user: dict, run: dict) -> str:
     <div class="shell">
       <p class="kicker">Crash test</p>
       <h1>{esc(label)}</h1>
-      <div class="banner {'banner-warn' if run['status'] in {'engine_unavailable', 'released', 'cancelled'} else ''}">
+      <div class="banner {'banner-warn' if run['status'] in {'engine_unavailable', 'released', 'cancelled', 'intake', 'unknown'} else ''}">
         <p>{esc(detail or 'No engine detail was recorded.')}</p>
       </div>
       <dl class="status-dl card">
