@@ -2,15 +2,11 @@ test_admin_is_not_a_public_registration_flag (test_app.AuthTests.test_admin_is_n
 test_allowance_cannot_be_raised_from_the_environment (test_app.AuthTests.test_allowance_cannot_be_raised_from_the_environment) ... ok
 test_duplicate_signup_and_short_password (test_app.AuthTests.test_duplicate_signup_and_short_password) ... ok
 test_signup_login_logout_and_session_rotation (test_app.AuthTests.test_signup_login_logout_and_session_rotation) ... ok
-test_disabled_engine_is_not_called_and_direct_budget_is_ignored (test_app.EngineTests.test_disabled_engine_is_not_called_and_direct_budget_is_ignored) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=6, family=2, type=1, proto=0, laddr=('127.0.0.1', 35869)>
+test_disabled_engine_is_not_called_and_direct_budget_is_ignored (test_app.EngineTests.test_disabled_engine_is_not_called_and_direct_budget_is_ignored) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=6, family=2, type=1, proto=0, laddr=('127.0.0.1', 35445)>
   if method() is not None:
 ResourceWarning: Enable tracemalloc to get the object allocation traceback
 ok
-test_engine_error_does_not_commit (test_app.EngineTests.test_engine_error_does_not_commit) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 40887)>
-  if method() is not None:
-ResourceWarning: Enable tracemalloc to get the object allocation traceback
-ok
-test_intake_does_not_count_as_a_finished_crash_test (test_app.EngineTests.test_intake_does_not_count_as_a_finished_crash_test) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 45935)>
+test_engine_error_does_not_commit (test_app.EngineTests.test_engine_error_does_not_commit) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 34085)>
   if method() is not None:
 ResourceWarning: Enable tracemalloc to get the object allocation traceback
 ok
@@ -23,24 +19,45 @@ test_signup_login_and_logout_require_csrf_and_sessions_can_be_revoked (test_app.
 test_checkout_is_fail_closed_without_a_price (test_app.PaymentTests.test_checkout_is_fail_closed_without_a_price) ... ok
 test_disabled_mode_ignores_a_valid_signature (test_app.PaymentTests.test_disabled_mode_ignores_a_valid_signature) ... ok
 test_live_price_without_a_model_cost_policy_stays_closed (test_app.PaymentTests.test_live_price_without_a_model_cost_policy_stays_closed) ... ok
-test_paid_credit_is_required_after_the_allowance_and_commits_once (test_app.PaymentTests.test_paid_credit_is_required_after_the_allowance_and_commits_once) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=7, family=2, type=1, proto=0, laddr=('127.0.0.1', 40103)>
-  if method() is not None:
-ResourceWarning: Enable tracemalloc to get the object allocation traceback
-ok
+test_paid_credit_is_required_after_the_allowance_and_commits_once (test_app.PaymentTests.test_paid_credit_is_required_after_the_allowance_and_commits_once) ... ok
 test_webhook_signature_is_a_test_double_and_does_not_grant_credits (test_app.PaymentTests.test_webhook_signature_is_a_test_double_and_does_not_grant_credits) ... ok
 test_cancel_before_the_engine_releases_once (test_app.QuotaTests.test_cancel_before_the_engine_releases_once) ... ok
 test_crash_before_acceptance_is_recovered_without_losing_the_credit (test_app.QuotaTests.test_crash_before_acceptance_is_recovered_without_losing_the_credit) ... request failed: POST api (RuntimeError)
 ok
 test_engine_unavailable_releases_and_retry_does_not_charge_twice (test_app.QuotaTests.test_engine_unavailable_releases_and_retry_does_not_charge_twice) ... ok
 test_six_concurrent_starts_cannot_hold_six_credits (test_app.QuotaTests.test_six_concurrent_starts_cannot_hold_six_credits) ... ok
-test_http_cookie_roundtrip_and_metrics_do_not_count_requests_as_people (test_app.SecurityTests.test_http_cookie_roundtrip_and_metrics_do_not_count_requests_as_people) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=14, family=2, type=1, proto=0, laddr=('127.0.0.1', 36795)>
+test_http_cookie_roundtrip_and_metrics_do_not_count_requests_as_people (test_app.SecurityTests.test_http_cookie_roundtrip_and_metrics_do_not_count_requests_as_people) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=6, family=2, type=1, proto=0, laddr=('127.0.0.1', 37829)>
   if method() is not None:
 ResourceWarning: Enable tracemalloc to get the object allocation traceback
 ok
 test_owner_isolation_and_direct_api_bypass (test_app.SecurityTests.test_owner_isolation_and_direct_api_bypass) ... ok
 test_rate_limit_and_unknown_paths (test_app.SecurityTests.test_rate_limit_and_unknown_paths) ... ok
+test_completed_counts_without_a_confirmed_finding (test_boundary.BoundaryContractTests.test_completed_counts_without_a_confirmed_finding) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=12, family=2, type=1, proto=0, laddr=('127.0.0.1', 33853)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_cost_policy_absent_does_not_count (test_boundary.BoundaryContractTests.test_cost_policy_absent_does_not_count) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=12, family=2, type=1, proto=0, laddr=('127.0.0.1', 38147)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_failed_without_a_model_does_not_count (test_boundary.BoundaryContractTests.test_failed_without_a_model_does_not_count) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=12, family=2, type=1, proto=0, laddr=('127.0.0.1', 41979)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_rejected_input_does_not_count (test_boundary.BoundaryContractTests.test_rejected_input_does_not_count) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 37333)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_replay_uses_one_post_and_other_owner_is_hidden (test_boundary.BoundaryContractTests.test_replay_uses_one_post_and_other_owner_is_hidden) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 35715)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_uncertain_is_held_and_not_retried (test_boundary.BoundaryContractTests.test_uncertain_is_held_and_not_retried) ... /usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 37831)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
 
 ----------------------------------------------------------------------
-Ran 24 tests in 4.208s
+Ran 29 tests in 6.595s
 
 OK

@@ -16,6 +16,9 @@ STATUS_LABEL = {
     "engine_unavailable": "Not sent",
     "intake": "Opened, model not called",
     "unknown": "Outcome unknown",
+    "not_counted": "Not counted",
+    "finished_unconfirmed": "Finished, nothing confirmed",
+    "retry_later": "Not started",
     "dispatching": "Sending",
     "accepted": "Accepted, no report",
     "in_progress": "In progress",
@@ -275,7 +278,7 @@ def dashboard(
     <div class="shell">
       <p class="kicker">Your account</p>
       <h1>Crash tests</h1>
-      <p class="lede">Five tests are included. A test counts when the engine accepts it. A lost reply stays held.</p>
+      <p class="lede">Five tests are included. A test counts when a provider call is recorded. An uncertain reply stays held.</p>
       {lock}
       {_allowance(view)}
       {starter}
@@ -299,8 +302,12 @@ def run_page(user: dict, run: dict) -> str:
     credit = "Released back to the account."
     if run["status"] == "intake":
         credit = "Not counted. Opening a campaign records seats and does not call a model."
+    elif run["status"] == "not_counted":
+        credit = "Not counted. No provider call was recorded."
+    elif run["status"] == "finished_unconfirmed":
+        credit = "Counted. A provider call finished. No finding was confirmed."
     elif run["status"] == "unknown":
-        credit = "Held. The reply was lost, so this test still counts against the five until an operator resolves it."
+        credit = "Held for operator review. This run is not retried."
     elif run["status"] == "dispatching":
         credit = "Held while the request is in flight."
     elif run["status"] in {"accepted", "completed", "failed"}:
@@ -318,7 +325,7 @@ def run_page(user: dict, run: dict) -> str:
     <div class="shell">
       <p class="kicker">Crash test</p>
       <h1>{esc(label)}</h1>
-      <div class="banner {'banner-warn' if run['status'] in {'engine_unavailable', 'released', 'cancelled', 'intake', 'unknown'} else ''}">
+      <div class="banner {'banner-warn' if run['status'] in {'engine_unavailable', 'released', 'cancelled', 'intake', 'unknown', 'not_counted'} else ''}">
         <p>{esc(detail or 'No engine detail was recorded.')}</p>
       </div>
       <dl class="status-dl card">
@@ -346,12 +353,35 @@ def _result_block(result_json: str | None) -> str:
         data = json.loads(result_json)
     except json.JSONDecodeError:
         return '<p>The engine returned data this page will not treat as a report.</p>'
-    if isinstance(data, dict) and isinstance(data.get("report"), str) and data["report"].strip():
+    if not isinstance(data, dict):
+        return '<p>The engine returned data this page will not treat as a report.</p>'
+    if "crash_result" in data or "findings_confirmed" in data or data.get("error_code") == "cost_policy_absent":
+        findings = data.get("findings_confirmed") if isinstance(data.get("findings_confirmed"), list) else []
+        shown = [str(item) for item in findings if str(item).strip()]
+        parts = [
+            f"<p>Crash result: {esc(data.get('crash_result') or 'not_confirmed')}.</p>",
+            "<p>No finding was confirmed.</p>" if not shown else "<ul class=\"plain\">"
+            + "".join(f"<li>{esc(item)}</li>" for item in shown)
+            + "</ul>",
+        ]
+        if data.get("error_code") == "cost_policy_absent":
+            parts.append("<p>No provider was called.</p>")
+        raw = None
+        report = data.get("report") if isinstance(data.get("report"), dict) else {}
+        if isinstance(report.get("raw_model_text_untrusted"), str):
+            raw = report["raw_model_text_untrusted"]
+        elif isinstance(data.get("raw_model_text_untrusted"), str):
+            raw = data["raw_model_text_untrusted"]
+        if raw and raw.strip():
+            parts.append("<p class=\"meta\">Untrusted model text. It is not a finding.</p>")
+            parts.append(f"<pre class=\"question\">{esc(_scrub_seats(raw))}</pre>")
+        return "".join(parts)
+    if isinstance(data.get("report"), str) and data["report"].strip():
         return (
             '<p class="meta">Text below is the engine payload, shown as text. It is not a finding written by this website.</p>'
             f'<pre class="question">{esc(_scrub_seats(data["report"]))}</pre>'
         )
-    return '<p>The engine did not return a report this site knows how to show. No findings were added here.</p>'
+    return '<p>The engine did not return a confirmed finding. None was added here.</p>'
 
 
 def _scrub_seats(text: str) -> str:

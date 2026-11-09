@@ -601,6 +601,32 @@ def resolve_unknown(conn: sqlite3.Connection, run_id: str, now_iso: str, action:
     return tx(conn, work)
 
 
+def reopen_for_retry(conn: sqlite3.Connection, reservation_id: str, now_iso: str, detail: str) -> None:
+    """429 concurrency: no engine row. Keep the same key and do not count a test."""
+
+    def work():
+        conn.execute(
+            """
+            UPDATE reservations
+            SET state = 'reserved', updated_at = ?
+            WHERE id = ? AND state = 'dispatching'
+            """,
+            (now_iso, reservation_id),
+        )
+        conn.execute(
+            """
+            UPDATE runs
+            SET status = 'retry_later', detail = ?, updated_at = ?
+            WHERE reservation_id = ?
+            """,
+            (detail, now_iso, reservation_id),
+        )
+
+    from app.db import tx
+
+    tx(conn, work)
+
+
 def read_run(conn: sqlite3.Connection, user_id: str, run_id: str) -> dict | None:
     row = conn.execute(
         "SELECT * FROM runs WHERE id = ? AND user_id = ?",

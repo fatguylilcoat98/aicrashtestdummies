@@ -67,7 +67,8 @@ def describe(code: str) -> str:
         "start_path_mismatch": "The configured start path does not match the contract, so nothing was called.",
         "budget_missing": "No per-run budget cap is configured, so a model call is refused.",
         "budget_not_engine_enforced": "A local contract file does not say the engine enforces the budget, so nothing was called.",
-        "public_tunnel_blocked": "The engine URL is not loopback. The public Team Talk tunnel has no customer auth, so this shell does not POST to it.",
+        "public_tunnel_blocked": "The engine URL is not loopback. This shell does not call the public tunnel.",
+        "boundary_token_unconfigured": "AICTD_BOUNDARY_TOKEN is unset, so the account boundary was not called.",
         "contract_missing": "No local contract file is required. Team Talk's live OpenAPI is the contract.",
         "team_talk_absent": "The Team Talk process documented at /opt/team-talk is not on this host.",
         "contract_rejected": "The contract file is present but does not match the binding this app can send.",
@@ -78,24 +79,22 @@ def describe(code: str) -> str:
     }.get(code, code)
 
 
-def invoke(config: Config, *, run_id: str, question: str) -> EngineOutcome:
+def invoke(config: Config, *, run_id: str, question: str, owner_id: str = "", idempotency_key: str = "") -> EngineOutcome:
     reasons = blockers(config)
-    # team_talk_absent is reported, but a remote base URL can still be a
-    # later deployment. Every other blocker refuses the call.
     hard = [item for item in reasons if item != "team_talk_absent"]
     if hard:
         return EngineOutcome(
             accepted=False,
             disposition="not_sent",
             code="engine_unavailable",
-            detail="The investigation engine was not called.\n" + "\n".join(describe(item) for item in hard),
+            detail="The account boundary was not called.\n" + "\n".join(describe(item) for item in hard),
             blockers=reasons,
         )
     if config.engine_transport is not None:
         return config.engine_transport(run_id=run_id, question=question)
-    from app.team_talk import intake
+    from app.boundary_client import submit
 
-    return intake(config, run_id=run_id, question=question)
+    return submit(config, owner_id=owner_id, shell_key=idempotency_key or run_id, question=question)
 
 
 class _NoRedirect(HTTPRedirectHandler):

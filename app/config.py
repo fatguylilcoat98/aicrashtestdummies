@@ -79,6 +79,7 @@ class Config:
     trusted_proxy_hops: int = 0
     signup_limit: int = 40
     form_cookie_name: str = "actd_form"
+    boundary_token: str | None = None
 
     @property
     def db_path(self) -> Path:
@@ -188,6 +189,7 @@ class Config:
             ),
             trusted_proxy_hops=int(os.environ.get("ACTD_TRUSTED_PROXY_HOPS", "0") or "0"),
             signup_limit=int(os.environ.get("ACTD_SIGNUP_LIMIT", "5")),
+            boundary_token=os.environ.get("AICTD_BOUNDARY_TOKEN", "").strip() or None,
             engine_base_url=os.environ.get("ACTD_ENGINE_BASE_URL", "").strip() or None,
             engine_start_path=os.environ.get("ACTD_ENGINE_START_PATH", "").strip() or None,
             engine_invocation_enabled=_flag("ACTD_ENGINE_INVOCATION_ENABLED"),

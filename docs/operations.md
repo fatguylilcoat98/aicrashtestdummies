@@ -39,7 +39,9 @@ python -m unittest discover -s tests -v
 
 ## Team Talk adapter
 
-The live contract is Team Talk OpenAPI (`GET /api/version` = 78, 233 paths) and `GET /api/lab/crash/modes` protocol `0.1.0`. Intake is `POST /api/lab/crash/open`. A `BOUND` campaign records seats and does not call a model. That is not a finished crash test and does not consume one of the five credits.
+The shell calls `POST http://127.0.0.1:5001/api/aict/v1/runs` with `Authorization: Bearer` from `AICTD_BOUNDARY_TOKEN` and `X-AICT-Owner` taken from the server session. It does not call `/api/lab/crash/open`. HTTP 200 is a terminal record, not a passed test. A free test is counted only when `model_invoked` is true on a terminal record other than `uncertain`. `cost_policy_absent` and a rejected input do not count. `uncertain` stays held and is not retried.
+
+The live engine still needs `AICTD_COST_POLICY_PATH` with real non-zero rates and one saved participant before a provider call can happen. Until then every live run fails `cost_policy_absent` and the shell does not spend a credit. No price ships in source. Checkout stays off.
 
 This shell does not call `POST /api/chat`, `POST /api/lab/crash/{id}/act`, experiment `authorize`/`execute`, or `POST /api/lab/bridge/crash-test`. Those can spend provider calls or run instruments, and Team Talk has no per-customer budget the shell can set first. A local `budget_usd` field is not sent.
 
@@ -47,13 +49,14 @@ The public tunnel `teamtalk.thegoodneighborguard.com` forwards to `localhost:500
 
 Run the account shell from a new directory such as `/home/chris/aictd-account-shell`, bound to `127.0.0.1:8765`, with its own SQLite file. Do not use port 8777. Do not change DNS. The apex stays on Pages.
 
-A loopback POST is allowed only when all of these are true:
+A loopback POST to `/api/aict/v1/runs` is allowed only when all of these are true:
 
 1. `ACTD_ENGINE_INVOCATION_ENABLED=1`
 2. `ACTD_ENGINE_BASE_URL` is `http://127.0.0.1:<port>` or localhost
 3. `ACTD_MAX_RUN_BUDGET_USD` is a positive number recorded by the operator. It is not sent to Team Talk.
+4. `AICTD_BOUNDARY_TOKEN` is set in the shell environment. It is not shown in the browser.
 
-The write is `POST /api/lab/crash/open` with track `DOCUMENT`, intensity `QUICK`, and no git URL or zip. The shell then reads `GET /api/lab/crash/{campaign_id}`. It does not send email, password, or a session cookie. `/opt/team-talk` being absent on this VM is reported and does not by itself authorize a call. The public tunnel host is refused.
+The body is plain text. The shell does not send git, zip, local paths, or an owner id supplied by the browser. The idempotency key sent to the engine is a stable hash of the shell key.
 
 ## Payment gate
 

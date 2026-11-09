@@ -284,8 +284,9 @@ class App:
             "admin_from_unverified_email": False,
             "public_launch": False,
             "operator_resolution": "configured" if self.config.operator_token else "missing",
-            "team_talk_contract": "openapi-233-paths-version-78",
+            "team_talk_contract": "aict.boundary.v1",
             "billable_engine_routes": "blocked",
+            "boundary_token": "configured" if self.config.boundary_token else "missing",
             "public_tunnel_unauthenticated": True,
         }
 
@@ -403,6 +404,10 @@ class App:
             return self._html(429, self._dashboard(conn, user, error=[message], question=str(form.get("question", ""))[:4000]))
         question = _clean_question(form.get("question", ""))
         key = str(form.get("idempotency_key", "")).strip()
+        form.pop("owner_id", None)
+        form.pop("local_path", None)
+        form.pop("git", None)
+        form.pop("zip_b64", None)
         # Clients cannot raise the budget or grant themselves credits.
         form.pop("budget_usd", None)
         form.pop("credits", None)
@@ -435,9 +440,15 @@ class App:
             return self._redirect("/app/billing")
         if not result["created"]:
             run = result["run"]
-            if as_json:
-                return self._json(200, {"idempotent": True, "run": _public_run(run)})
-            return self._redirect(f"/app/runs/{run['id']}")
+            if run.get("status") != "retry_later":
+                if as_json:
+                    return self._json(200, {"idempotent": True, "run": _public_run(run)})
+                return self._redirect(f"/app/runs/{run['id']}")
+            result = {
+                "created": True,
+                "reservation_id": run["reservation_id"],
+                "run_id": run["id"],
+            }
         if self.config.before_engine:
             self.config.before_engine({"run_id": result["run_id"], "reservation_id": result["reservation_id"]})
         current = ledger.read_reservation(conn, result["reservation_id"])
@@ -457,11 +468,25 @@ class App:
                 if as_json:
                     return self._json(200, {"run": _public_run(run)})
                 return self._redirect(f"/app/runs/{result['run_id']}")
-        outcome = engine.invoke(self.config, run_id=result["run_id"], question=question)
+        outcome = engine.invoke(
+            self.config,
+            run_id=result["run_id"],
+            question=question,
+            owner_id=user["id"],
+            idempotency_key=key,
+        )
         now_done = iso(utcnow())
+        if outcome.disposition == "retry":
+            ledger.reopen_for_retry(conn, result["reservation_id"], now_done, outcome.detail)
+            if as_json:
+                return self._json(429, {"error": "concurrency_limit", "idempotency_key": key})
+            return self._html(429, self._dashboard(conn, user, error=[outcome.detail], question=question, idempotency_key=key))
         if outcome.disposition == "ambiguous":
             recorded = ledger.mark_unknown(conn, result["reservation_id"], now_done, outcome.detail)
             run = recorded.get("run") or ledger.read_run(conn, user["id"], result["run_id"])
+            if run and outcome.result_json:
+                conn.execute("UPDATE runs SET result_json = ? WHERE id = ? AND user_id = ?", (outcome.result_json, run["id"], user["id"]))
+                run = ledger.read_run(conn, user["id"], result["run_id"])
             if as_json:
                 return self._json(202, {"run": _public_run(run), "engine_blockers": outcome.blockers or []})
             return self._redirect(f"/app/runs/{run['id']}")
@@ -474,7 +499,7 @@ class App:
             run_status=status,
             engine_code=outcome.code,
             engine_ref=outcome.engine_ref,
-            result_json=outcome.result_json if outcome.accepted else None,
+            result_json=outcome.result_json,
             detail=outcome.detail,
         )
         run = finalized.get("run") or ledger.read_run(conn, user["id"], result["run_id"])
@@ -843,10 +868,16 @@ def _has_report(run: dict) -> bool:
         return False
     if not isinstance(data, dict):
         return False
+    findings = data.get("findings_confirmed")
+    if isinstance(findings, list) and any(str(item).strip() for item in findings):
+        return True
     report = data.get("report")
     if isinstance(report, str):
         return bool(report.strip())
-    return isinstance(report, dict) and bool(report)
+    if isinstance(report, dict):
+        nested = report.get("findings_confirmed") or []
+        return any(str(item).strip() for item in nested)
+    return False
 
 
 def _public_runs(runs: list[dict]) -> list[dict]:
@@ -854,13 +885,13 @@ def _public_runs(runs: list[dict]) -> list[dict]:
 
 
 def _run_status(outcome: engine.EngineOutcome) -> str:
+    if outcome.code in {"not_counted", "finished_unconfirmed", "completed", "unknown", "retry_later"}:
+        return outcome.code
     if outcome.disposition == "intake":
         return "intake"
     if not outcome.accepted:
         return "engine_unavailable"
-    if outcome.code == "completed":
-        return "completed"
-    return "accepted"
+    return "finished_unconfirmed"
 
 
 def assert_no_seat_names(blob: str) -> bool:

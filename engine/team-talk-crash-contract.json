@@ -1,5 +1,5 @@
 {
-  "source": "Live GET https://teamtalk.thegoodneighborguard.com/openapi.json and /api/lab/crash/modes on 2026-11-05",
+  "shell_client": "POST /api/aict/v1/runs only. This file records the older crash OpenAPI surface. The shell does not call crash/open.",
   "openapi_title": "Team Talk",
   "openapi_paths": 233,
   "api_version": "78",

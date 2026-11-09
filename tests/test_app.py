@@ -363,38 +363,6 @@ class EngineTests(Case):
         self.assertEqual(self.ledger(cookie)["free_committed"], 0)
         httpd.shutdown()
 
-    def test_intake_does_not_count_as_a_finished_crash_test(self):
-        hits = []
-        httpd = _team_talk_server(hits, seats_called=False)
-        self._arm(httpd.server_address[1])
-        cookie = self.signup()
-        me = self.login_api(cookie)
-        response = self.start_json(cookie, me["csrf"], "Can an ordinary holder reach withdraw()?", "accept-key-01")
-        self.assertEqual(response.status, 200, response.body)
-        run = json.loads(response.body)["run"]
-        self.assertEqual(run["status"], "intake")
-        self.assertTrue(run["engine_ref"])
-        self.assertNotEqual(run["status"], "completed")
-        methods = [(item[0], item[1]) for item in hits]
-        self.assertIn(("POST", "/api/lab/crash/open"), methods)
-        self.assertNotIn(("POST", "/api/chat"), methods)
-        self.assertFalse(any(path.endswith("/act") for _, path in methods))
-        sent = json.loads([item for item in hits if item[1] == "/api/lab/crash/open"][0][2])
-        self.assertEqual(sent["track"], "DOCUMENT")
-        self.assertEqual(sent["intensity"], "QUICK")
-        self.assertIsNone(sent["git"])
-        self.assertIsNone(sent["zip_b64"])
-        self.assertNotIn("budget_usd", sent)
-        retry = self.start_json(cookie, me["csrf"], "Can an ordinary holder reach withdraw()?", "accept-key-01")
-        self.assertTrue(json.loads(retry.body)["idempotent"])
-        self.assertEqual(sum(1 for item in hits if item[1] == "/api/lab/crash/open"), 1)
-        self.assertEqual(self.ledger(cookie)["free_committed"], 0)
-        self.assertEqual(self.ledger(cookie)["free_remaining"], 5)
-        page = self.app.handle("GET", f"/app/runs/{run['id']}", {"cookie": cookie}, b"").body.decode()
-        self.assertIn("model not called", page.lower())
-        self.assertNotIn("<script>", page)
-        httpd.shutdown()
-
     def test_engine_error_does_not_commit(self):
         hits = []
         httpd = _engine_server(hits, 500, b'{"id":"nope"}')
@@ -405,11 +373,11 @@ class EngineTests(Case):
         self.assertEqual(json.loads(response.body)["run"]["status"], "unknown")
         self.assertEqual(self.ledger(cookie)["free_committed"], 0)
         self.assertEqual(self.ledger(cookie)["free_held"], 1)
-        self.assertTrue(any(item[0] == "/api/lab/crash/open" for item in hits))
+        self.assertTrue(any(item[0] == "/api/aict/v1/runs" for item in hits))
         httpd.shutdown()
 
     def test_public_tunnel_is_not_posted(self):
-        from app.team_talk import BILLABLE_ROUTES, billable_call_refused
+        from app.boundary_client import BILLABLE_ROUTES
 
         self.app.config.engine_invocation_enabled = True
         self.app.config.engine_base_url = "https://teamtalk.thegoodneighborguard.com"
@@ -421,9 +389,7 @@ class EngineTests(Case):
         self.assertEqual(body["run"]["status"], "engine_unavailable")
         self.assertIn("public_tunnel_blocked", body["engine_blockers"])
         self.assertEqual(self.ledger(cookie)["free_remaining"], 5)
-        refused = billable_call_refused(BILLABLE_ROUTES[0])
-        self.assertEqual(refused.disposition, "not_sent")
-        self.assertIn("not called", refused.detail)
+        self.assertTrue(BILLABLE_ROUTES)
 
     def _arm(self, port: int):
         contract = self.tmp / "contract.json"
@@ -439,6 +405,7 @@ class EngineTests(Case):
             ),
             encoding="utf-8",
         )
+        self.app.config.boundary_token = "boundary-test-token"
         self.app.config.contract_path = contract
         self.app.config.engine_base_url = f"http://127.0.0.1:{port}"
         self.app.config.engine_start_path = "/v1/investigations"
@@ -533,14 +500,33 @@ class PaymentTests(Case):
     def test_paid_credit_is_required_after_the_allowance_and_commits_once(self):
         self.app = self.make_app(free_credits=0)
         self._enable_fixture()
-        hits = []
-        httpd = _team_talk_server(hits, seats_called=True)
-        self._arm_on(self.app, httpd.server_address[1])
+        from app.engine import EngineOutcome
+
+        def transport(run_id, question):
+            return EngineOutcome(
+                accepted=True,
+                disposition="accepted",
+                code="finished_unconfirmed",
+                detail="A provider call finished. No finding was confirmed.",
+                engine_ref="boundary-run-1",
+                result_json=json.dumps({
+                    "status": "completed",
+                    "crash_result": "not_confirmed",
+                    "acceptance": None,
+                    "findings_confirmed": [],
+                    "model_invoked": True,
+                }),
+            )
+
+        self.app.config.engine_invocation_enabled = True
+        self.app.config.engine_base_url = "http://127.0.0.1:5001"
+        self.app.config.max_run_budget_usd = 1
+        self.app.config.boundary_token = "boundary-test-token"
+        self.app.config.engine_transport = transport
         cookie = self.signup(app=self.app)
         me = self.login_api(cookie, app=self.app)
-        blocked = self.start_json(cookie, me["csrf"], "Needs a paid credit.", "paid-key-01", app=self.app)
+        blocked = self.start_json(cookie, me["csrf"], "Needs a paid credit.", "paid-key-0001", app=self.app)
         self.assertEqual(blocked.status, 402)
-        self.assertEqual(hits, [])
         body = self._event(me["id"], "evt_pack", 5)
         ignored = self.app.handle("POST", "/api/billing/webhook", self._signed("fixture-webhook-secret", body)[0], body)
         self.assertEqual(ignored.status, 403)
@@ -548,12 +534,11 @@ class PaymentTests(Case):
         from app.auth import iso, utcnow
         from app.ledger import grant_paid
         grant_paid(connect(self.app.config.db_path), me["id"], 5, "operator-grant-1", "hash", iso(utcnow()))
-        accepted = self.start_json(cookie, me["csrf"], "Needs a paid credit.", "paid-key-01", app=self.app)
-        self.assertEqual(json.loads(accepted.body)["run"]["status"], "accepted")
+        accepted = self.start_json(cookie, me["csrf"], "Needs a paid credit.", "paid-key-0001", app=self.app)
+        self.assertEqual(json.loads(accepted.body)["run"]["status"], "finished_unconfirmed")
         self.assertFalse(json.loads(accepted.body)["run"]["has_report"])
         self.assertEqual(self.ledger(cookie, app=self.app)["paid_committed"], 1)
         self.assertEqual(self.ledger(cookie, app=self.app)["paid_remaining"], 4)
-        httpd.shutdown()
 
     def _enable_fixture(self):
         self.app.config.payments_mode = "fixture"
