@@ -34,6 +34,19 @@ Legacy until replaced: the current Team Talk screens. Nothing in that list was r
 
 Not safe to delete without a separate decision: sessions, ledger, receipts, uploaded repositories.
 
+## Phase 2 shell (this branch)
+
+The public site now has an account shell in `app/`. It is still not a second investigation core.
+
+What was found, and not invented:
+
+- No payment provider, price, Stripe key, or checkout configuration exists in the repository. `pricing.html` said no price is published. Checkout stays fail-closed.
+- Team Talk is not in this repository. `repo_bundle.py`, `repo_evidence.py`, and `investigation_engine.py` are absent. `/opt/team-talk` is not on this host. There is no HTTP route list, shared credential, or request schema. `engine/identity-map.json` is only the internal seat map and is not served.
+- The shell will not call a guessed Team Talk URL. A call requires the operator to set the base URL, the exact start path, a budget cap, `ACTD_ENGINE_INVOCATION_ENABLED=1`, and a contract file whose path matches. This branch does not ship that file.
+
+Accounts, the five-test ledger, and the payment adapter are implemented and tested here. A crash-test page shows an honest unavailable state unless that contract is actually present. Deploy and rollback steps are in `docs/operations.md`.
+
+
 ## This phase
 
 Homepage, docs, example report, pricing, and the pre-launch start page. Sign-in and start both land on the pre-launch page. No statistics, testimonials, customers, or prices were invented. The reference image's testimonial and role titles were not copied. Roles are not permanent.

@@ -1,0 +1,59 @@
+..../usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=6, family=2, type=1, proto=0, laddr=('127.0.0.1', 36893)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+./usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 38467)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+....request failed: POST api (RuntimeError)
+...............request failed: POST api (RuntimeError)
+.../usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=10, family=2, type=1, proto=0, laddr=('127.0.0.1', 38863)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+...----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 37074)
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/socketserver.py", line 692, in process_request_thread
+    self.finish_request(request, client_address)
+  File "/usr/lib/python3.12/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/usr/lib/python3.12/socketserver.py", line 761, in __init__
+    self.handle()
+  File "/usr/lib/python3.12/http/server.py", line 436, in handle
+    self.handle_one_request()
+  File "/usr/lib/python3.12/http/server.py", line 424, in handle_one_request
+    method()
+  File "/agent/repos/aicrashtestdummies/tests/test_boundary.py", line 325, in do_GET
+    self.wfile.write(raw)
+  File "/usr/lib/python3.12/socketserver.py", line 840, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+./usr/lib/python3.12/threading.py:293: ResourceWarning: unclosed <socket.socket fd=17, family=2, type=1, proto=0, laddr=('127.0.0.1', 40201)>
+  self._waiters = _deque()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=18, family=2, type=1, proto=0, laddr=('127.0.0.1', 36083)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+./usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 40019)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+./usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 45233)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+./usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 38353)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+./usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 39407)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+./usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 43675)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+./usr/lib/python3.12/unittest/case.py:589: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 45173)>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.
+----------------------------------------------------------------------
+Ran 38 tests in 8.190s
+
+OK

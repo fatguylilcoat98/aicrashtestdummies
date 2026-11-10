@@ -1,0 +1,17 @@
+# Extensionless marketing URLs. A 200 rewrite keeps the short path.
+/pricing   /pricing.html   200
+/docs      /docs.html      200
+/example   /example.html   200
+/start     /start.html     200
+
+# While the apex is still Cloudflare Pages, account and crash-test paths
+# have no Python server here. Send them to the shell host so the button
+# is not a copy of the homepage. These rules stop applying when the apex
+# DNS record points at the tunnel. Do not enable ACTD_REDIRECT_HOSTS on
+# the shell until that cutover, or the two redirects loop.
+/account     https://app.aicrashtestdummies.com/account/signup   302
+/account/    https://app.aicrashtestdummies.com/account/signup   302
+/account/*   https://app.aicrashtestdummies.com/account/:splat   302
+/app         https://app.aicrashtestdummies.com/app              302
+/app/        https://app.aicrashtestdummies.com/app              302
+/app/*       https://app.aicrashtestdummies.com/app/:splat       302

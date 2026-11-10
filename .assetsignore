@@ -1,0 +1,11 @@
+# Used only if the Pages project still publishes the repository root.
+# The reliable exclusion is scripts/export_pages.py with output directory dist/.
+app/
+tests/
+docs/
+engine/
+scripts/
+*.py
+*.sqlite
+data/
+__pycache__/
