@@ -472,6 +472,26 @@ th { font-family: var(--ui); letter-spacing: 0.06em; text-transform: uppercase; 
   word-break: break-word;
   max-width: 100%;
 }
+.finding {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  margin: 12px 0;
+}
+.finding h3 { margin: 8px 0; font-size: 20px; }
+.badge {
+  display: inline-block;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-family: var(--ui);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 12px;
+}
+.badge-high, .badge-critical { color: #ffb4b4; border-color: #ffb4b4; }
+.badge-medium { color: #f0d48a; border-color: #f0d48a; }
+.badge-low, .badge-info { color: #9ad7c4; border-color: #9ad7c4; }
 .status-live { font-size: clamp(28px, 6vw, 40px); }
 
 @media (max-width: 900px) {

@@ -26,6 +26,7 @@ STATUS_LABEL = {
     "failed": "Failed after acceptance",
     "cancelled": "Cancelled",
     "released": "Credit released",
+    "issues_found": "Issues found",
 }
 
 
@@ -368,6 +369,8 @@ def run_page(user: dict, run: dict) -> str:
         credit = "Counted. The engine had already accepted the run."
     elif run["status"] == "reserved":
         credit = "Held. Not counted yet."
+    elif run["status"] == "issues_found":
+        credit = "Counted. The boundary reported issues. This uses one included test."
     elif run["status"] == "cancelled":
         credit = "Released. Cancelled before acceptance."
     detail = run.get("detail") or ""
@@ -415,19 +418,31 @@ def _result_block(result_json: str | None) -> str:
         return '<p>The engine returned data this page will not treat as a report.</p>'
     if not isinstance(data, dict):
         return '<p>The engine returned data this page will not treat as a report.</p>'
-    if "crash_result" in data or "findings_confirmed" in data or data.get("error_code") == "cost_policy_absent":
-        findings = data.get("findings_confirmed") if isinstance(data.get("findings_confirmed"), list) else []
-        shown = [str(item) for item in findings if str(item).strip()]
+    if "crash_result" in data or "findings_confirmed" in data or "findings" in data or data.get("error_code") == "cost_policy_absent":
+        report = data.get("report") if isinstance(data.get("report"), dict) else {}
+        crash = report.get("crash_result") or data.get("crash_result") or "not_confirmed"
+        issue_cards = _finding_cards(_issue_findings(data))
+        confirmed = data.get("findings_confirmed") if isinstance(data.get("findings_confirmed"), list) else []
+        if not confirmed and isinstance(report.get("findings_confirmed"), list):
+            confirmed = report["findings_confirmed"]
+        shown = []
+        for item in confirmed:
+            if isinstance(item, str) and item.strip():
+                shown.append(esc(item))
+            elif isinstance(item, dict):
+                title = str(item.get("title") or "").strip()
+                if title:
+                    shown.append(esc(title))
         parts = [
-            f"<p>Crash result: {esc(data.get('crash_result') or 'not_confirmed')}.</p>",
-            "<p>No finding was confirmed.</p>" if not shown else "<ul class=\"plain\">"
-            + "".join(f"<li>{esc(item)}</li>" for item in shown)
-            + "</ul>",
+            f"<p>Crash result: {esc(crash)}.</p>",
+            issue_cards,
+            "<h3>Confirmed findings</h3>" if shown else "",
+            "<ul class=\"plain\">" + "".join(f"<li>{item}</li>" for item in shown) + "</ul>" if shown else "",
+            "" if shown or issue_cards else "<p>No finding was confirmed.</p>",
         ]
         if data.get("error_code") == "cost_policy_absent":
             parts.append("<p>No provider was called.</p>")
         raw = None
-        report = data.get("report") if isinstance(data.get("report"), dict) else {}
         if isinstance(report.get("raw_model_text_untrusted"), str):
             raw = report["raw_model_text_untrusted"]
         elif isinstance(data.get("raw_model_text_untrusted"), str):
@@ -442,6 +457,42 @@ def _result_block(result_json: str | None) -> str:
             f'<pre class="question">{esc(_scrub_seats(data["report"]))}</pre>'
         )
     return '<p>The engine did not return a confirmed finding. None was added here.</p>'
+
+
+def _issue_findings(data: dict) -> list[dict]:
+    report = data.get("report") if isinstance(data.get("report"), dict) else {}
+    raw = report.get("findings") if isinstance(report.get("findings"), list) else data.get("findings")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def _finding_cards(findings: list[dict]) -> str:
+    cards = []
+    for item in findings:
+        severity = str(item.get("severity") or "unspecified")
+        token = re.sub(r"[^a-z0-9-]", "", severity.lower()) or "other"
+        if token not in {"low", "medium", "high", "critical", "info"}:
+            token = "other"
+        state = str(item.get("verification_state") or "model-found, not executed")
+        executed = item.get("executed") is True
+        receipt = item.get("receipt_id")
+        receipt_text = "No receipt." if receipt in (None, "") else f"Receipt {receipt}."
+        executed_text = "Executed." if executed else "Not executed."
+        cards.append(
+            "<article class=\"finding\">"
+            f"<p class=\"badge badge-{token}\">{esc(severity)}</p>"
+            f"<h3>{esc(item.get('title') or 'Untitled issue')}</h3>"
+            "<p class=\"meta\">Evidence</p>"
+            f"<pre class=\"question\"><code>{esc(item.get('evidence') or '')}</code></pre>"
+            f"<p><strong>Why.</strong> {esc(item.get('why') or '')}</p>"
+            f"<p><strong>Suggested fix.</strong> {esc(item.get('suggested_fix') or '')}</p>"
+            f"<p class=\"meta\">{esc(state)} {esc(executed_text)} {esc(receipt_text)}</p>"
+            "</article>"
+        )
+    if not cards:
+        return ""
+    return "<h3>Issues</h3>" + "".join(cards)
 
 
 def _scrub_seats(text: str) -> str:
@@ -619,6 +670,20 @@ def visitors_dashboard(summary: dict) -> str:
       <section class="card">
         <h2>Crash tests</h2>
         <table><thead><tr><th>Day</th><th>Runs</th></tr></thead><tbody>{pairs(summary.get('crash_tests') or [], 'day', 'n')}</tbody></table>
+      </section>
+      <section class="card">
+        <h2>Engine spend</h2>
+        <p class="meta">These figures are the engine's estimate. They are not a customer price and are not shown on account pages.</p>
+        <p>Prompt tokens {cell((summary.get('usage') or {}).get('prompt_tokens'))}. Completion tokens {cell((summary.get('usage') or {}).get('completion_tokens'))}. Total tokens {cell((summary.get('usage') or {}).get('total_tokens'))}. Spend estimate {cell((summary.get('usage') or {}).get('spend_estimate_microusd'))} microusd.</p>
+        <table>
+          <thead><tr><th>Day</th><th>Status</th><th>Prompt</th><th>Completion</th><th>Total</th><th>microusd</th></tr></thead>
+          <tbody>{''.join(
+            '<tr><td>' + esc(str(row.get('day') or '')) + '</td><td>' + esc(str(row.get('status') or '')) + '</td>'
+            + '<td>' + cell(row.get('prompt_tokens')) + '</td><td>' + cell(row.get('completion_tokens')) + '</td>'
+            + '<td>' + cell(row.get('total_tokens')) + '</td><td>' + cell(row.get('spend_estimate_microusd')) + '</td></tr>'
+            for row in (summary.get('spend_runs') or [])
+          ) or '<tr><td colspan="6">None recorded</td></tr>'}</tbody>
+        </table>
       </section>
       <form method="post" action="/admin/operator-logout"><button class="btn btn-ghost" type="submit">Close</button></form>
     </div>

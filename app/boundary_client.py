@@ -113,6 +113,7 @@ def submit(config: Config, *, owner_id: str, shell_key: str, question: str) -> E
             token=token,
             owner_id=owner_id,
             idempotency_key=key,
+            timeout=config.boundary_timeout_seconds,
         )
     except _Transport as exc:
         return exc.outcome
@@ -125,20 +126,25 @@ def submit(config: Config, *, owner_id: str, shell_key: str, question: str) -> E
                 token=token,
                 owner_id=owner_id,
                 idempotency_key=None,
+                timeout=config.boundary_timeout_seconds,
             )
         except _Transport:
             report_status, report = 0, None
         if report_status == 200 and isinstance(report, dict):
             body = dict(body)
-            body["report"] = {
-                "schema": report.get("schema"),
-                "crash_result": report.get("crash_result", "not_confirmed"),
-                "acceptance": report.get("acceptance"),
-                "findings_confirmed": report.get("findings_confirmed") or [],
-                "raw_model_text_untrusted": report.get("raw_model_text_untrusted"),
-            }
-            if isinstance(report.get("findings_confirmed"), list):
-                body["findings_confirmed"] = report["findings_confirmed"]
+            body["report"] = _kept_report(report)
+            for field in (
+                "crash_result",
+                "findings",
+                "findings_confirmed",
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+                "spend_estimate_microusd",
+            ):
+                if report.get(field) in (None, "", []):
+                    continue
+                body[field] = report.get(field)
     return _from_body(status, body if isinstance(body, dict) else {})
 
 
@@ -154,17 +160,91 @@ def get_run(config: Config, *, owner_id: str, run_id: str) -> tuple[int, dict]:
             token=config.boundary_token,
             owner_id=owner_id,
             idempotency_key=None,
+            timeout=config.boundary_timeout_seconds,
         )
     except _Transport as exc:
         return 503, {"error": "unreachable", "detail": exc.outcome.detail}
 
 
+def _kept_report(report: dict) -> dict:
+    findings = report.get("findings") if isinstance(report.get("findings"), list) else []
+    confirmed = report.get("findings_confirmed") if isinstance(report.get("findings_confirmed"), list) else []
+    return {
+        "schema": report.get("schema"),
+        "crash_result": report.get("crash_result", "not_confirmed"),
+        "acceptance": report.get("acceptance"),
+        "findings": findings,
+        "findings_confirmed": confirmed,
+        "raw_model_text_untrusted": report.get("raw_model_text_untrusted"),
+        "prompt_tokens": _count(report.get("prompt_tokens")),
+        "completion_tokens": _count(report.get("completion_tokens")),
+        "total_tokens": _count(report.get("total_tokens")),
+        "spend_estimate_microusd": _count(report.get("spend_estimate_microusd")),
+    }
+
+
+def _issues_found(body: dict) -> bool:
+    sources = [body]
+    report = body.get("report")
+    if isinstance(report, dict):
+        sources.append(report)
+    for source in sources:
+        if source.get("crash_result") == "issues_found":
+            return True
+        findings = source.get("findings")
+        if isinstance(findings, list) and any(isinstance(item, dict) for item in findings):
+            return True
+    return False
+
+
+def _count(value):
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < 0 or value > 10**15:
+        return None
+    return value
+
+
+def usage_from_json(raw: str | None) -> dict:
+    if not raw:
+        return {}
+    try:
+        body = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(body, dict):
+        return {}
+    sources = []
+    report = body.get("report")
+    if isinstance(report, dict):
+        sources.append(report)
+    sources.append(body)
+    recorded = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens", "spend_estimate_microusd"):
+        for source in sources:
+            value = _count(source.get(key))
+            if value is not None:
+                recorded[key] = value
+                break
+    return recorded
+
+
 def _from_body(status: int, body: dict) -> EngineOutcome:
     action = classify(status, body)
+    if status == 200 and _issues_found(body) and body.get("status") not in {"uncertain", "accepted", "running"}:
+        action = "commit"
     code = str(body.get("error_code") or body.get("error") or body.get("status") or "boundary")
     findings = body.get("findings_confirmed")
-    confirmed = isinstance(findings, list) and any(str(item).strip() for item in findings)
-    if action == "commit" and confirmed:
+    confirmed = isinstance(findings, list) and any(str(item).strip() for item in findings if not isinstance(item, dict))
+    if isinstance(findings, list):
+        confirmed = confirmed or any(isinstance(item, dict) and any(str(item.get(key) or "").strip() for key in ("title", "evidence")) for item in findings)
+    if action == "commit" and _issues_found(body):
+        shell_code = "issues_found"
+        detail = (
+            "The boundary reported issues. This uses one included test. "
+            "A model-found item was not executed and is not a confirmed finding."
+        )
+    elif action == "commit" and confirmed:
         shell_code = "completed"
         detail = "The boundary confirmed a finding."
     elif action == "commit":
@@ -221,7 +301,7 @@ class _Transport(Exception):
         self.outcome = outcome
 
 
-def _json_request(url, *, method, payload, token, owner_id, idempotency_key):
+def _json_request(url, *, method, payload, token, owner_id, idempotency_key, timeout=120):
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     headers = {
         "Accept": "application/json",
@@ -235,7 +315,7 @@ def _json_request(url, *, method, payload, token, owner_id, idempotency_key):
     request = Request(url, data=data, method=method, headers=headers)
     opener = build_opener(_NoRedirect())
     try:
-        with opener.open(request, timeout=3) as response:
+        with opener.open(request, timeout=timeout) as response:
             raw = response.read(64_000)
             status = getattr(response, "status", 200)
     except HTTPError as exc:

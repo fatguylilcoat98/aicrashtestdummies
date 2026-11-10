@@ -79,6 +79,9 @@ def _stub(mode):
             elif mode == "bad":
                 self._send(400, {"error": "unsupported_field", "model_invoked": False, "crash_result": "not_confirmed", "acceptance": None})
                 return
+            elif mode == "issues":
+                record = _record("completed", error_code=None, model=True, held=True)
+                record["crash_result"] = "issues_found"
             else:
                 record = _record("completed", error_code=None, model=True, held=True)
             record["owner_id"] = owner
@@ -101,6 +104,28 @@ def _stub(mode):
                 self._send(404, {"error": "not_found", "model_invoked": False, "crash_result": "not_confirmed", "acceptance": None})
                 return
             if self.path.endswith("/report"):
+                if mode == "issues":
+                    self._send(200, {
+                        "schema": "aict.boundary.report.v2",
+                        "crash_result": "issues_found",
+                        "findings": [{
+                            "title": "Bounds check <script>",
+                            "severity": "high",
+                            "evidence": "if (n < len) {",
+                            "why": "The index is not checked.",
+                            "suggested_fix": "Compare against the length.",
+                            "verification_state": "model-found, not executed",
+                            "executed": False,
+                            "receipt_id": None,
+                        }],
+                        "findings_confirmed": [],
+                        "prompt_tokens": 120,
+                        "completion_tokens": 40,
+                        "total_tokens": 160,
+                        "spend_estimate_microusd": 424242,
+                        "raw_model_text_untrusted": "not the card",
+                    })
+                    return
                 self._send(200, {
                     "schema": "aict.boundary.report.v1",
                     "crash_result": "not_confirmed",
@@ -233,3 +258,90 @@ class BoundaryContractTests(Case):
         self.assertEqual(status, 404)
         self.assertNotIn("Ada", json.dumps(body))
         httpd.shutdown()
+
+    def test_issues_found_counts_one_test_and_hides_spend_from_the_customer(self):
+        from urllib.parse import urlencode
+        from app.db import connect
+
+        httpd, _hits = _stub("issues")
+        self._arm(httpd.server_address[1])
+        cookie = self.signup()
+        me = self.login_api(cookie)
+        response = self.start_json(cookie, me["csrf"], "Look at this bounds check.", "boundary-key-issues")
+        self.assertEqual(response.status, 200, response.body)
+        run = json.loads(response.body)["run"]
+        self.assertEqual(run["status"], "issues_found")
+        self.assertNotIn("424242", response.body.decode())
+        self.assertEqual(self.ledger(cookie)["free_committed"], 1)
+        page = self.app.handle("GET", f"/app/runs/{run['id']}", {"cookie": cookie}, b"").body.decode()
+        self.assertIn("Issues found", page)
+        self.assertIn("Bounds check &lt;script&gt;", page)
+        self.assertNotIn("Bounds check <script>", page)
+        self.assertIn("if (n &lt; len) {", page)
+        self.assertIn("The index is not checked.", page)
+        self.assertIn("Compare against the length.", page)
+        self.assertIn("model-found, not executed", page)
+        self.assertIn("Not executed.", page)
+        self.assertIn("No receipt.", page)
+        self.assertNotIn("424242", page)
+        self.assertNotIn("microusd", page)
+        stored = connect(self.app.config.db_path).execute(
+            "SELECT prompt_tokens, completion_tokens, total_tokens, spend_estimate_microusd FROM runs WHERE id = ?",
+            (run["id"],),
+        ).fetchone()
+        self.assertEqual(stored["prompt_tokens"], 120)
+        self.assertEqual(stored["completion_tokens"], 40)
+        self.assertEqual(stored["total_tokens"], 160)
+        self.assertEqual(stored["spend_estimate_microusd"], 424242)
+        self.app.config.operator_token = "operator-token-for-tests"
+        denied = self.app.handle("GET", "/admin/visitors", {"cookie": cookie}, b"")
+        self.assertEqual(denied.status, 401)
+        login = self.app.handle(
+            "POST",
+            "/admin/operator-login",
+            {"content-type": "application/x-www-form-urlencoded"},
+            urlencode({"token": "operator-token-for-tests"}).encode(),
+        )
+        operator = [value.split(";", 1)[0] for key, value in login.headers if key.lower() == "set-cookie" and value.startswith("actd_operator=")][0]
+        board = self.app.handle("GET", "/admin/visitors", {"cookie": operator}, b"").body.decode()
+        self.assertIn("424242", board)
+        self.assertIn("microusd", board)
+        httpd.shutdown()
+
+    def test_boundary_timeout_defaults_to_120_seconds(self):
+        import time
+        from app.boundary_client import _Transport, _json_request
+        from app.config import Config
+
+        self.assertEqual(Config().boundary_timeout_seconds, 120)
+
+        class Slow(BaseHTTPRequestHandler):
+            def do_GET(self):
+                time.sleep(0.4)
+                raw = b'{"ok": true}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def log_message(self, fmt, *args):
+                return
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        port = httpd.server_address[1]
+        try:
+            with self.assertRaises(_Transport) as caught:
+                _json_request(
+                    f"http://127.0.0.1:{port}/runs",
+                    method="GET",
+                    payload=None,
+                    token="t",
+                    owner_id="owner",
+                    idempotency_key=None,
+                    timeout=0.05,
+                )
+            self.assertEqual(caught.exception.outcome.disposition, "ambiguous")
+            self.assertIn("timeout", caught.exception.outcome.blockers or [])
+        finally:
+            httpd.shutdown()

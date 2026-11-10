@@ -277,6 +277,7 @@ def finalize(
     engine_ref: str | None,
     result_json: str | None,
     detail: str | None,
+    usage: dict | None = None,
 ) -> dict:
     """Commit or release. A second call cannot charge again."""
 
@@ -325,13 +326,27 @@ def finalize(
             fresh = conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
             run = conn.execute("SELECT * FROM runs WHERE id = ?", (row["run_id"],)).fetchone()
             return {"changed": False, "state": fresh["state"], "run": dict(run)}
+        recorded = usage or {}
         conn.execute(
             """
             UPDATE runs
-            SET status = ?, engine_code = ?, engine_ref = ?, result_json = ?, detail = ?, updated_at = ?
+            SET status = ?, engine_code = ?, engine_ref = ?, result_json = ?, detail = ?, updated_at = ?,
+                prompt_tokens = ?, completion_tokens = ?, total_tokens = ?, spend_estimate_microusd = ?
             WHERE id = ?
             """,
-            (run_status, engine_code, engine_ref, result_json, detail, now_iso, row["run_id"]),
+            (
+                run_status,
+                engine_code,
+                engine_ref,
+                result_json,
+                detail,
+                now_iso,
+                recorded.get("prompt_tokens"),
+                recorded.get("completion_tokens"),
+                recorded.get("total_tokens"),
+                recorded.get("spend_estimate_microusd"),
+                row["run_id"],
+            ),
         )
         conn.execute(
             """

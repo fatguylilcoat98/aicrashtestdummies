@@ -13,6 +13,7 @@ from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, quote, urlparse
 
 from app import analytics, engine, intake, ledger, payments, visitors
+from app.boundary_client import usage_from_json
 from app.auth import (
     client_bucket,
     dummy_verify,
@@ -744,6 +745,7 @@ class App:
             engine_ref=outcome.engine_ref,
             result_json=outcome.result_json,
             detail=outcome.detail,
+            usage=usage_from_json(outcome.result_json),
         )
         run = finalized.get("run") or ledger.read_run(conn, user["id"], result["run_id"])
         if as_json:
@@ -1167,7 +1169,7 @@ def _public_runs(runs: list[dict]) -> list[dict]:
 
 
 def _run_status(outcome: engine.EngineOutcome) -> str:
-    if outcome.code in {"not_counted", "finished_unconfirmed", "completed", "unknown", "retry_later"}:
+    if outcome.code in {"not_counted", "finished_unconfirmed", "completed", "unknown", "retry_later", "issues_found"}:
         return outcome.code
     if outcome.disposition == "intake":
         return "intake"

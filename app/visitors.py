@@ -187,10 +187,34 @@ def summary(conn: sqlite3.Connection) -> dict:
         FROM runs GROUP BY day ORDER BY day DESC LIMIT 14
         """
     ).fetchall()
+    usage = conn.execute(
+        """
+        SELECT COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+               COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+               COALESCE(SUM(total_tokens), 0) AS total_tokens,
+               COALESCE(SUM(spend_estimate_microusd), 0) AS spend_estimate_microusd
+        FROM runs
+        """
+    ).fetchone()
+    spend_rows = conn.execute(
+        """
+        SELECT substr(created_at, 1, 10) AS day, status,
+               prompt_tokens, completion_tokens, total_tokens, spend_estimate_microusd
+        FROM runs
+        WHERE prompt_tokens IS NOT NULL
+           OR completion_tokens IS NOT NULL
+           OR total_tokens IS NOT NULL
+           OR spend_estimate_microusd IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT 14
+        """
+    ).fetchall()
     return {
         "days": [dict(row) for row in days],
         "pages": [dict(row) for row in pages],
         "referrers": [dict(row) for row in referrers],
         "signups": [dict(row) for row in signups],
         "crash_tests": [dict(row) for row in tests],
+        "usage": dict(usage) if usage is not None else {},
+        "spend_runs": [dict(row) for row in spend_rows],
     }

@@ -132,6 +132,7 @@ Shell environment:
 - `ACTD_ENGINE_BASE_URL=http://127.0.0.1:5001`
 - `ACTD_MAX_RUN_BUDGET_USD` a positive number. It is not sent to Team Talk.
 - `AICTD_BOUNDARY_TOKEN` the boundary bearer token
+- `ACTD_BOUNDARY_TIMEOUT_SECONDS` defaults to 120. The boundary client waits that long. A lost reply still holds the credit.
 - Stripe stays unset until a price exists: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID` or `STRIPE_PAYMENT_LINK`, `STRIPE_CREDITS_PER_PURCHASE`
 
 Webhook URL, when Stripe is turned on: `https://aicrashtestdummies.com/api/billing/stripe-webhook`

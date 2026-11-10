@@ -60,6 +60,10 @@ CREATE TABLE IF NOT EXISTS runs (
   engine_ref TEXT,
   result_json TEXT,
   detail TEXT,
+  prompt_tokens INTEGER,
+  completion_tokens INTEGER,
+  total_tokens INTEGER,
+  spend_estimate_microusd INTEGER,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY (user_id) REFERENCES users(id)
@@ -129,6 +133,13 @@ CREATE TABLE IF NOT EXISTS visit_hits (
 CREATE INDEX IF NOT EXISTS idx_visit_day ON visit_hits(day, kind);
 """
 
+RUN_USAGE_COLUMNS = (
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "spend_estimate_microusd",
+)
+
 
 def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -138,6 +149,10 @@ def connect(path: Path) -> sqlite3.Connection:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
     if "email_verified" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0")
+    run_columns = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
+    for column in RUN_USAGE_COLUMNS:
+        if column not in run_columns:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {column} INTEGER")
     return conn
 
 

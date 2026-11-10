@@ -68,6 +68,19 @@ def redirect_hosts_from_env() -> frozenset[str]:
     return frozenset(item.strip().rstrip(".") for item in text.split(",") if item.strip())
 
 
+def _timeout_seconds(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if value <= 0 or value > 600:
+        return default
+    return value
+
+
 @dataclass
 class Config:
     env: str = "development"
@@ -100,6 +113,7 @@ class Config:
     max_upload_bytes: int = 2 * 1024 * 1024
     max_uncompressed_bytes: int = 8 * 1024 * 1024
     input_char_cap: int = 12_000
+    boundary_timeout_seconds: float = 120
     auth_limit: int = 10
     auth_window_seconds: int = 3600
     start_limit: int = 8
@@ -244,6 +258,7 @@ class Config:
             max_run_budget_usd=_opt_float("ACTD_MAX_RUN_BUDGET_USD"),
             canonical_origin=clean_origin(os.environ.get("ACTD_CANONICAL_ORIGIN", DEFAULT_ORIGIN)),
             redirect_hosts=redirect_hosts_from_env(),
+            boundary_timeout_seconds=_timeout_seconds("ACTD_BOUNDARY_TIMEOUT_SECONDS", 120),
         )
         if env == "production" and cfg.payments_mode == "fixture":
             raise SystemExit("ACTD_PAYMENTS_MODE=fixture is refused when ACTD_ENV=production")
