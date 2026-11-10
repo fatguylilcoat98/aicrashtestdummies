@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /api/
+Disallow: /engine
+Disallow: /v/
+
+Sitemap: https://aicrashtestdummies.com/sitemap.xml
